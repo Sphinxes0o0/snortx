@@ -274,24 +274,47 @@ func (g *Generator) buildIP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Pa
 
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 
-	eth := &layers.Ethernet{
-		SrcMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
-		DstMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x02},
-		EthernetType: layers.EthernetTypeIPv4,
-	}
-
-	ip := &layers.IPv4{
-		SrcIP:   net.ParseIP(srcIP),
-		DstIP:   net.ParseIP(dstIP),
-		Version: 4,
-		IHL:     5,
-		TTL:     64,
-	}
+	srcIPParsed := net.ParseIP(srcIP)
+	dstIPParsed := net.ParseIP(dstIP)
 
 	buf := gopacket.NewSerializeBuffer()
-	err := gopacket.SerializeLayers(buf, opts, eth, ip, gopacket.Payload(payload))
-	if err != nil {
-		return nil, err
+
+	if srcIPParsed.To4() != nil || dstIPParsed.To4() != nil {
+		// IPv4
+		eth := &layers.Ethernet{
+			SrcMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
+			DstMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x02},
+			EthernetType: layers.EthernetTypeIPv4,
+		}
+		ip := &layers.IPv4{
+			SrcIP:   srcIPParsed,
+			DstIP:   dstIPParsed,
+			Version: 4,
+			IHL:     5,
+			TTL:     64,
+		}
+		err := gopacket.SerializeLayers(buf, opts, eth, ip, gopacket.Payload(payload))
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// IPv6
+		eth := &layers.Ethernet{
+			SrcMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
+			DstMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x02},
+			EthernetType: layers.EthernetTypeIPv6,
+		}
+		ip6 := &layers.IPv6{
+			SrcIP:      srcIPParsed,
+			DstIP:      dstIPParsed,
+			Version:    6,
+			HopLimit:   64,
+			NextHeader: layers.IPProtocol(0), // No next header for raw IP payload
+		}
+		err := gopacket.SerializeLayers(buf, opts, eth, ip6, gopacket.Payload(payload))
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	packet := gopacket.NewPacket(buf.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
