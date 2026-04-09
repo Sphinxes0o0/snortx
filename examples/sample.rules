@@ -49,10 +49,10 @@ alert tcp !10.0.0.0/8 any -> any any (msg:"TEST negated network"; content:"test"
 # === PCRE Tests ===
 
 # TCP with PCRE
-alert tcp any any -> any any (msg:"TEST PCRE"; content:"GET /"; pcre:"/GET \\//"; sid:1000007; rev:1;)
+alert tcp any any -> any any (msg:"TEST PCRE"; content:"GET /"; pcre:"/GET /"; sid:1000007; rev:1;)
 
 # PCRE with case insensitive
-alert tcp any any -> any any (msg:"TEST PCRE case insensitive"; content:"GET"; pcre:"/get \\//i"; sid:1000018; rev:1;)
+alert tcp any any -> any any (msg:"TEST PCRE case insensitive"; content:"GET"; pcre:"/get/i"; sid:1000018; rev:1;)
 
 # PCRE with hex escape
 alert tcp any any -> any any (msg:"TEST PCRE hex"; pcre:"/\x47\x45\x54/"; sid:1000019; rev:1;)
@@ -107,4 +107,4 @@ pass tcp any any -> any any (msg:"TEST pass action"; content:"test"; sid:1000029
 # === Complex Rules ===
 
 # Multiple options
-alert tcp any any -> any 80 (msg:"TEST complex rule"; content:"GET"; nocase; pcre:"/GET \\//"; flow:to_server; sid:1000030; rev:1;)
+alert tcp any any -> any 80 (msg:"TEST complex rule"; content:"GET /"; nocase; pcre:"/GET /"; flow:to_server; sid:1000030; rev:1;)
