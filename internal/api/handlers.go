@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/user/snortx/internal/engine"
 	"github.com/user/snortx/internal/packets"
@@ -13,21 +14,21 @@ import (
 )
 
 type Handlers struct {
-	engine    *engine.Engine
 	generator *packets.Generator
-	sender    *packets.Sender
 	jsonGen   *reports.JSONGenerator
 	htmlGen   *reports.HTMLGenerator
 	outputDir string
+	mu        sync.RWMutex
+	testRuns  map[string]*reports.TestRunResult
 }
 
 func NewHandlers(outputDir string) *Handlers {
 	return &Handlers{
 		generator: packets.NewGenerator(),
-		sender:    nil,
 		jsonGen:   reports.NewJSONGenerator(outputDir),
 		htmlGen:   reports.NewHTMLGenerator(outputDir),
 		outputDir: outputDir,
+		testRuns:  make(map[string]*reports.TestRunResult),
 	}
 }
 
@@ -126,6 +127,11 @@ func (h *Handlers) RunTests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Store result
+	h.mu.Lock()
+	h.testRuns[result.TestRunID] = result
+	h.mu.Unlock()
+
 	// Generate reports
 	var jsonPath, htmlPath string
 	switch req.Format {
@@ -141,6 +147,9 @@ func (h *Handlers) RunTests(w http.ResponseWriter, r *http.Request) {
 	resp := TestRunResponse{
 		TestRunID: result.TestRunID,
 		Status:    "completed",
+		Total:     result.TotalRules,
+		Success:   result.SuccessCount,
+		Failed:    result.FailureCount,
 		Message:   fmt.Sprintf("JSON: %s, HTML: %s", jsonPath, htmlPath),
 	}
 
@@ -148,7 +157,22 @@ func (h *Handlers) RunTests(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) GetTestResults(w http.ResponseWriter, r *http.Request) {
-	h.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	testRunID := r.URL.Query().Get("id")
+	if testRunID == "" {
+		h.writeError(w, http.StatusBadRequest, "missing test_run_id", "")
+		return
+	}
+
+	h.mu.RLock()
+	result, exists := h.testRuns[testRunID]
+	h.mu.RUnlock()
+
+	if !exists {
+		h.writeError(w, http.StatusNotFound, "test run not found", "")
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handlers) HealthCheck(w http.ResponseWriter, r *http.Request) {

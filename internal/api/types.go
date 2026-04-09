@@ -29,6 +29,9 @@ type TestRunRequest struct {
 type TestRunResponse struct {
 	TestRunID string `json:"test_run_id"`
 	Status    string `json:"status"`
+	Total     int    `json:"total"`
+	Success   int    `json:"success"`
+	Failed    int    `json:"failed"`
 	Message   string `json:"message"`
 }
 
