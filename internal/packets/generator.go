@@ -50,6 +50,8 @@ func (g *Generator) Generate(rule *rules.ParsedRule) ([]gopacket.Packet, error) 
 		pkts, err = g.buildICMP(rule, false)
 	case "ip":
 		pkts, err = g.buildIP(rule, false)
+	case "sctp":
+		pkts, err = g.buildSCTP(rule, false)
 	default:
 		return nil, fmt.Errorf("unsupported protocol: %s", rule.Protocol)
 	}
@@ -69,6 +71,8 @@ func (g *Generator) Generate(rule *rules.ParsedRule) ([]gopacket.Packet, error) 
 			reversePkts, err = g.buildICMP(rule, true)
 		case "ip":
 			reversePkts, err = g.buildIP(rule, true)
+		case "sctp":
+			reversePkts, err = g.buildSCTP(rule, true)
 		}
 		if err == nil {
 			pkts = append(pkts, reversePkts...)
@@ -315,6 +319,53 @@ func (g *Generator) buildIP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Pa
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	packet := gopacket.NewPacket(buf.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
+	return []gopacket.Packet{packet}, nil
+}
+
+func (g *Generator) buildSCTP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Packet, error) {
+	srcIP := g.expandIP(rule.SrcNet)
+	dstIP := g.expandIP(rule.DstNet)
+	srcPort := g.expandPort(rule.SrcPorts)
+	dstPort := g.expandPort(rule.DstPorts)
+
+	if reverse {
+		srcIP, dstIP = dstIP, srcIP
+		srcPort, dstPort = dstPort, srcPort
+	}
+
+	payload := g.buildPayload(rule.Contents, rule.PCREMatches)
+
+	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+
+	eth := &layers.Ethernet{
+		SrcMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
+		DstMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x02},
+		EthernetType: layers.EthernetTypeIPv4,
+	}
+
+	ip := &layers.IPv4{
+		SrcIP:    net.ParseIP(srcIP),
+		DstIP:    net.ParseIP(dstIP),
+		Protocol: layers.IPProtocolSCTP,
+		Version:  4,
+		IHL:      5,
+		TTL:      64,
+	}
+
+	sctp := &layers.SCTP{
+		SrcPort:  layers.SCTPPort(srcPort),
+		DstPort:  layers.SCTPPort(dstPort),
+	}
+
+	// SCTP checksum is optional in some contexts, skip SetNetworkLayerForChecksum
+
+	buf := gopacket.NewSerializeBuffer()
+	err := gopacket.SerializeLayers(buf, opts, eth, ip, sctp, gopacket.Payload(payload))
+	if err != nil {
+		return nil, err
 	}
 
 	packet := gopacket.NewPacket(buf.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
