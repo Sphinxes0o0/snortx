@@ -69,8 +69,22 @@ var genCmd = &cobra.Command{
 	RunE:  generatePackets,
 }
 
+var lintCmd = &cobra.Command{
+	Use:   "lint <rule-file>",
+	Short: "Validate Snort rules without generating packets",
+	Args:  cobra.ExactArgs(1),
+	RunE:  lintRules,
+}
+
+var batchCmd = &cobra.Command{
+	Use:   "batch <rule-files...>",
+	Short: "Run tests on multiple rule files",
+	Args:  cobra.MinimumNArgs(1),
+	RunE:  batchTest,
+}
+
 func init() {
-	rootCmd.AddCommand(parseCmd, testCmd, serveCmd, versionCmd, genCmd)
+	rootCmd.AddCommand(parseCmd, testCmd, serveCmd, versionCmd, genCmd, lintCmd, batchCmd)
 
 	rootCmd.PersistentFlags().StringVarP(&outputDir, "output", "o", "./output", "Output directory")
 	rootCmd.PersistentFlags().StringVar(&configFile, "config", "", "Config file path")
@@ -312,5 +326,155 @@ func generatePackets(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\nGenerated packets for %d/%d rules\n", generated, len(rulesList))
+	return nil
+}
+
+func lintRules(cmd *cobra.Command, args []string) error {
+	ruleFile := args[0]
+
+	parser := rules.NewParser()
+	rulesList, err := parser.ParseFile(ruleFile)
+	if err != nil {
+		return fmt.Errorf("failed to parse rules: %w", err)
+	}
+
+	generator := packets.NewGenerator()
+
+	fmt.Printf("Validating %d rules from %s...\n\n", len(rulesList), ruleFile)
+
+	warnings := 0
+	errors := 0
+	for _, rule := range rulesList {
+		issues := validateRule(rule, generator)
+		if len(issues) > 0 {
+			for _, issue := range issues {
+				if issue.isError {
+					fmt.Printf("  SID %d [ERROR]: %s\n", rule.RuleID.SID, issue.msg)
+					errors++
+				} else {
+					fmt.Printf("  SID %d [WARN]: %s\n", rule.RuleID.SID, issue.msg)
+					warnings++
+				}
+			}
+		}
+	}
+
+	fmt.Printf("\nValidation complete: %d errors, %d warnings\n", errors, warnings)
+	if errors > 0 {
+		fmt.Println("Rule validation failed due to errors")
+	}
+	return nil
+}
+
+type lintIssue struct {
+	isError bool
+	msg     string
+}
+
+func validateRule(rule *rules.ParsedRule, generator *packets.Generator) []lintIssue {
+	var issues []lintIssue
+
+	// Check for empty content and no PCRE
+	if len(rule.Contents) == 0 && len(rule.PCREMatches) == 0 {
+		issues = append(issues, lintIssue{isError: false, msg: "no content match or PCRE - will use generic payload"})
+	}
+
+	// Try to generate a packet
+	_, err := generator.Generate(rule)
+	if err != nil {
+		issues = append(issues, lintIssue{isError: true, msg: err.Error()})
+	}
+
+	// Check for potentially problematic patterns
+	if len(rule.Contents) > 0 {
+		for i, c := range rule.Contents {
+			if c.IsNegated {
+				issues = append(issues, lintIssue{isError: false, msg: fmt.Sprintf("content[%d] is negated - may not match correctly", i)})
+			}
+			if c.Nocase && len(rule.Contents) > 1 {
+				issues = append(issues, lintIssue{isError: false, msg: fmt.Sprintf("content[%d] has nocase with multiple contents - may cause issues", i)})
+			}
+		}
+	}
+
+	// Check PCRE patterns for complex constructs
+	for i, pcre := range rule.PCREMatches {
+		if len(pcre.Modifiers) > 0 {
+			if contains(pcre.Modifiers, 'R') || contains(pcre.Modifiers, 'U') {
+				issues = append(issues, lintIssue{isError: false, msg: fmt.Sprintf("pcre[%d] has PCRE_MATCH_END or PCRE_UNGREEDY modifier", i)})
+			}
+		}
+	}
+
+	return issues
+}
+
+func contains(s string, c rune) bool {
+	for _, r := range s {
+		if r == c {
+			return true
+		}
+	}
+	return false
+}
+
+func batchTest(cmd *cobra.Command, args []string) error {
+	parser := rules.NewParser()
+	generator := packets.NewGenerator()
+
+	totalRules := 0
+	totalSuccess := 0
+	totalFailed := 0
+
+	for _, ruleFile := range args {
+		rulesList, err := parser.ParseFile(ruleFile)
+		if err != nil {
+			fmt.Printf("Error parsing %s: %v\n", ruleFile, err)
+			continue
+		}
+
+		fmt.Printf("Processing %s: %d rules\n", ruleFile, len(rulesList))
+		totalRules += len(rulesList)
+
+		sender, err := packets.NewSenderWithMode(outputDir, interface_, packets.ModePCAP)
+		if err != nil {
+			fmt.Printf("Error creating sender: %v\n", err)
+			continue
+		}
+		defer sender.Close()
+
+		eng, err := engine.New(engine.EngineConfig{
+			Parser:    parser,
+			Generator: generator,
+			Sender:    sender,
+			OutputDir: outputDir,
+		})
+		if err != nil {
+			fmt.Printf("Error creating engine: %v\n", err)
+			continue
+		}
+
+		result, err := eng.Run(rulesList)
+		if err != nil {
+			fmt.Printf("Error running tests: %v\n", err)
+			continue
+		}
+
+		totalSuccess += result.SuccessCount
+		totalFailed += result.FailureCount
+
+		// Generate reports
+		reports.NewJSONGenerator(outputDir).Generate(result)
+		reports.NewHTMLGenerator(outputDir).Generate(result)
+	}
+
+	fmt.Printf("\n=== Batch Summary ===\n")
+	fmt.Printf("Total rules: %d\n", totalRules)
+	fmt.Printf("Success: %d\n", totalSuccess)
+	fmt.Printf("Failed: %d\n", totalFailed)
+	if totalRules > 0 {
+		fmt.Printf("Success rate: %.1f%%\n", float64(totalSuccess)/float64(totalRules)*100)
+	}
+
 	return nil
 }
