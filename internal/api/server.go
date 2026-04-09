@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
 	"net/http"
 	"time"
 
@@ -15,11 +16,14 @@ type Server struct {
 }
 
 type ServerConfig struct {
-	Address   string
-	OutputDir string
-	Auth      AuthConfig
-	CORS      []string
-	RateLimit int
+	Address    string
+	OutputDir  string
+	Auth       AuthConfig
+	CORS       []string
+	RateLimit  int
+	TLSEnabled bool
+	TLSCert    string
+	TLSKey     string
 }
 
 type AuthConfig struct {
@@ -31,7 +35,7 @@ func NewServer(cfg ServerConfig) *Server {
 	h := NewHandlers(cfg.OutputDir)
 	router := NewRouter(h, cfg.Auth, cfg.CORS, cfg.RateLimit)
 
-	return &Server{
+	srv := &Server{
 		srv: &http.Server{
 			Addr:         cfg.Address,
 			Handler:      router,
@@ -41,9 +45,18 @@ func NewServer(cfg ServerConfig) *Server {
 		router:   router,
 		handlers: h,
 	}
+
+	if cfg.TLSEnabled {
+		srv.srv.TLSConfig = &tls.Config{}
+	}
+
+	return srv
 }
 
 func (s *Server) Start() error {
+	if s.srv.TLSConfig != nil {
+		return s.srv.ListenAndServeTLS("", "")
+	}
 	return s.srv.ListenAndServe()
 }
 

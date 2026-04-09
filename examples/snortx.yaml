@@ -1,0 +1,35 @@
+app:
+  name: snortx
+  version: "1.0.0"
+  description: Snort rule testing tool
+
+engine:
+  worker_count: 0  # 0 = auto (NumCPU)
+  rule_timeout: 30s
+  total_timeout: 5m
+  output_dir: ./output
+  generator:
+    default_src_ip: "192.168.1.100"
+    default_dst_ip: "10.0.0.1"
+    default_src_port: 12345
+    default_dst_port: 80
+  sender:
+    interface: "lo0"
+    snap_len: 65536
+    timeout: 1s
+
+api:
+  address: ":8080"
+  tls_enabled: false
+  tls_cert: ""
+  tls_key: ""
+  rate_limit: 100
+  cors_allowed_origins:
+    - "*"
+  auth:
+    enabled: false
+    token: ""
+
+cli:
+  verbose: false
+  json: false
