@@ -321,15 +321,44 @@ func (g *Generator) buildPayload(contents []rules.ContentMatch, pcreMatches []ru
 
 // extractLiteralFromPCRE tries to extract a literal string from a PCRE pattern
 func extractLiteralFromPCRE(pattern string) []byte {
-	// Look for simple string literals in quotes
-	// Pattern: "some text" or 'some text'
+	// First, try simple quoted strings
+	if lit := extractQuotedString(pattern); lit != nil {
+		return lit
+	}
+
+	// Try to extract hex escapes
+	if lit := extractHexEscapes(pattern); lit != nil {
+		return lit
+	}
+
+	// Strip complex PCRE constructs and try to find literal content
+	stripped := stripPCREConstructs(pattern)
+	if stripped == "" {
+		return nil
+	}
+
+	// After stripping, try quoted strings and hex again
+	if lit := extractQuotedString(stripped); lit != nil {
+		return lit
+	}
+	if lit := extractHexEscapes(stripped); lit != nil {
+		return lit
+	}
+
+	// Try to decode remaining escaped characters as literal bytes
+	return decodeEscapedString(stripped)
+}
+
+func extractQuotedString(pattern string) []byte {
 	re := regexp.MustCompile(`["']([^"']+)["']`)
 	matches := re.FindStringSubmatch(pattern)
 	if len(matches) > 1 {
 		return []byte(matches[1])
 	}
+	return nil
+}
 
-	// Look for hex escapes like \x48\x65\x6c\x6c\x6f = "Hello"
+func extractHexEscapes(pattern string) []byte {
 	hexRe := regexp.MustCompile(`\\x([0-9a-fA-F]{2})`)
 	hexMatches := hexRe.FindAllStringSubmatch(pattern, -1)
 	if len(hexMatches) > 0 {
@@ -343,8 +372,99 @@ func extractLiteralFromPCRE(pattern string) []byte {
 			return result
 		}
 	}
-
 	return nil
+}
+
+// stripPCREConstructs removes lookahead, lookbehind, non-capturing groups,
+// quantifiers, anchors, and other PCRE constructs to extract the literal core
+func stripPCREConstructs(pattern string) string {
+	// Remove lookahead/lookbehind: (?=...), (?!...), (?<=...), (?<!...)
+	// and non-capturing groups: (?:...)
+	lookRe := regexp.MustCompile(`\(\?(?:[=!]|<[=!]?)?[^)]*\)`)
+	pattern = lookRe.ReplaceAllString(pattern, "")
+
+	// Remove atomic groups and possessive quantifiers: (?>...), *+, ++, ?+
+	atomicRe := regexp.MustCompile(`\(\?>[^)]*\)|\([^+?]+\+|[+?]\+`)
+	pattern = atomicRe.ReplaceAllString(pattern, "")
+
+	// Remove anchors that Go regex doesn't support: \A, \z
+	pattern = strings.ReplaceAll(pattern, "\\A", "")
+	pattern = strings.ReplaceAll(pattern, "\\z", "")
+
+	// Remove word boundaries that might cause issues: \b, \B
+	pattern = strings.ReplaceAll(pattern, "\\b", "")
+	pattern = strings.ReplaceAll(pattern, "\\B", "")
+
+	// Remove quantifiers: *, +, ?, {n,m}
+	quantRe := regexp.MustCompile(`[+*?]\??|\{[^}]*\}`)
+	pattern = quantRe.ReplaceAllString(pattern, "")
+
+	// Handle alternation - take first alternative
+	if idx := strings.Index(pattern, "|"); idx > 0 {
+		pattern = pattern[:idx]
+	}
+
+	// Remove remaining parentheses (capturing groups)
+	parenRe := regexp.MustCompile(`\([^)]*\)`)
+	for parenRe.MatchString(pattern) {
+		pattern = parenRe.ReplaceAllString(pattern, "")
+	}
+
+	// Remove character class negation at start: [^...]
+	classNegRe := regexp.MustCompile(`\[\^[^\]]+\]`)
+	pattern = classNegRe.ReplaceAllString(pattern, "")
+
+	return pattern
+}
+
+func decodeEscapedString(pattern string) []byte {
+	// Handle common escape sequences that represent single bytes
+	result := make([]byte, 0)
+	i := 0
+	for i < len(pattern) {
+		if pattern[i] == '\\' && i+1 < len(pattern) {
+			next := pattern[i+1]
+			switch next {
+			case 'x':
+				// Hex escape \xNN
+				if i+3 < len(pattern) {
+					if b, err := strconv.ParseUint(pattern[i+2:i+4], 16, 8); err == nil {
+						result = append(result, byte(b))
+						i += 4
+						continue
+					}
+				}
+				i += 2
+			case 'd', 'w', 's', 'D', 'W', 'S':
+				// Character class escapes - can't convert to literal
+				i += 2
+			case 'n':
+				result = append(result, '\n')
+				i += 2
+			case 'r':
+				result = append(result, '\r')
+				i += 2
+			case 't':
+				result = append(result, '\t')
+				i += 2
+			case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+				// Backreference or octal - skip
+				i += 2
+			default:
+				// Escaped literal character
+				result = append(result, next)
+				i += 2
+			}
+		} else if pattern[i] >= 32 && pattern[i] < 127 {
+			// Printable ASCII
+			result = append(result, pattern[i])
+			i++
+		} else {
+			// Non-printable or non-ASCII - skip
+			i++
+		}
+	}
+	return result
 }
 
 func (g *Generator) expandIP(net_ string) string {
