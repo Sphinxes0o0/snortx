@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -23,11 +24,16 @@ var (
 	authToken   string
 	corsOrigins string
 	rateLimit   int
+	configFile  string
 )
+
+const version = "1.0.0"
 
 var rootCmd = &cobra.Command{
 	Use:   "snortx",
 	Short: "Snort rule testing tool",
+	Long:  `snortx parses Snort rules, generates matching network packets,
+records them to PCAP files, and generates HTML/JSON test reports.`,
 }
 
 var parseCmd = &cobra.Command{
@@ -50,10 +56,24 @@ var serveCmd = &cobra.Command{
 	RunE:  startServer,
 }
 
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Show version information",
+	RunE:  showVersion,
+}
+
+var genCmd = &cobra.Command{
+	Use:   "generate <rule-file>",
+	Short: "Generate packets from rules (without sending)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  generatePackets,
+}
+
 func init() {
-	rootCmd.AddCommand(parseCmd, testCmd, serveCmd)
+	rootCmd.AddCommand(parseCmd, testCmd, serveCmd, versionCmd, genCmd)
 
 	rootCmd.PersistentFlags().StringVarP(&outputDir, "output", "o", "./output", "Output directory")
+	rootCmd.PersistentFlags().StringVar(&configFile, "config", "", "Config file path")
 
 	testCmd.Flags().StringVarP(&interface_, "interface", "i", "lo0", "Network interface")
 	testCmd.Flags().IntVarP(&workers, "workers", "w", 0, "Number of parallel workers (0=auto)")
@@ -259,4 +279,38 @@ func trimSpace(s string) string {
 		end--
 	}
 	return s[start:end]
+}
+
+func showVersion(cmd *cobra.Command, args []string) error {
+	fmt.Printf("snortx version %s\n", version)
+	fmt.Printf("Go version: %s\n", runtime.Version())
+	fmt.Printf("OS/Arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	return nil
+}
+
+func generatePackets(cmd *cobra.Command, args []string) error {
+	ruleFile := args[0]
+
+	parser := rules.NewParser()
+	rulesList, err := parser.ParseFile(ruleFile)
+	if err != nil {
+		return fmt.Errorf("failed to parse rules: %w", err)
+	}
+
+	generator := packets.NewGenerator()
+
+	fmt.Printf("Generating packets for %d rules...\n", len(rulesList))
+	generated := 0
+	for _, rule := range rulesList {
+		pkts, err := generator.Generate(rule)
+		if err != nil {
+			fmt.Printf("  SID %d: ERROR - %v\n", rule.RuleID.SID, err)
+			continue
+		}
+		fmt.Printf("  SID %d: Generated %d packet(s)\n", rule.RuleID.SID, len(pkts))
+		generated++
+	}
+
+	fmt.Printf("\nGenerated packets for %d/%d rules\n", generated, len(rulesList))
+	return nil
 }
