@@ -28,8 +28,14 @@ go mod tidy
 ## Running
 
 ```bash
+# Show version
+./snortx version
+
 # Parse rules
 ./snortx parse examples/sample.rules
+
+# Generate packets (without sending)
+./snortx generate examples/sample.rules
 
 # Run full test pipeline
 ./snortx test examples/sample.rules -o /tmp/output
@@ -37,6 +43,16 @@ go mod tidy
 # Start API server
 ./snortx-api serve --addr :8080
 ```
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `parse <file>` | Parse Snort rules from file |
+| `generate <file>` | Generate packets from rules (without sending) |
+| `test <file>` | Run full test pipeline |
+| `serve` | Start the REST API server |
+| `version` | Show version information |
 
 ## Architecture
 
@@ -57,8 +73,14 @@ pkg/config           → Configuration structs
 - `packets.Sender`: Writes packets to PCAP files
 - `engine.Engine`: Worker pool that processes rules in parallel via channels
 
+## Supported Protocols
+
+- TCP, UDP, ICMP, IP (IPv4/IPv6), SCTP
+- Application protocols mapped to TCP: HTTP, HTTPS, FTP, SSH, SMTP, DNS, etc.
+
 ## Notes
 
 - Uses gopacket for packet construction; requires `SerializeLayers` with all layers at once (Ethernet + IP + L4 + Payload) to produce valid packets
 - PCAP writer uses pcapgo; CaptureInfo must have correct CaptureLength/Length set
 - Worker pool uses buffered channels for rule input and results aggregation
+- PCRE patterns are validated against generated payloads using Go's regexp
