@@ -1,4 +1,7 @@
 # Sample Snort 3 Rules for Testing
+# These rules cover various protocol and option combinations
+
+# === Basic Protocol Tests ===
 
 # Simple TCP content match
 alert tcp any any -> any any (msg:"TEST TCP content"; content:"test"; sid:1000001; rev:1;)
@@ -12,20 +15,96 @@ alert udp any any -> any any (msg:"TEST UDP"; content:"payload"; sid:1000003; re
 # ICMP packet
 alert icmp any any -> any any (msg:"TEST ICMP"; content:"ping"; sid:1000004; rev:1;)
 
+# Raw IP packet
+alert ip any any -> any any (msg:"TEST IP"; content:"test"; sid:1000011; rev:1;)
+
+# === Application Protocol Tests ===
+
 # HTTP-like traffic
 alert tcp any any -> any 80 (msg:"HTTP traffic"; content:"GET"; nocase; sid:1000005; rev:1;)
+
+# HTTPS (mapped to TCP)
+alert https any any -> any any (msg:"HTTPS traffic"; content:"GET"; sid:1000012; rev:1;)
+
+# DNS query
+alert dns any any -> any any (msg:"DNS query"; content:"example"; sid:1000013; rev:1;)
+
+# SSH traffic
+alert ssh any any -> any any (msg:"SSH traffic"; content:"SSH"; sid:1000014; rev:1;)
+
+# === Port and Network Tests ===
 
 # TCP with port range
 alert tcp any any -> any 8000:9000 (msg:"TEST port range"; content:"test"; sid:1000006; rev:1;)
 
+# Multiple ports
+alert tcp any any -> any 80,443,8080 (msg:"TEST multiple ports"; content:"test"; sid:1000015; rev:1;)
+
+# Variable expansion
+alert tcp $HOME_NET any -> $EXTERNAL_NET any (msg:"TEST variable expansion"; content:"test"; sid:1000016; rev:1;)
+
+# Negated network
+alert tcp !10.0.0.0/8 any -> any any (msg:"TEST negated network"; content:"test"; sid:1000017; rev:1;)
+
+# === PCRE Tests ===
+
 # TCP with PCRE
-alert tcp any any -> any any (msg:"TEST PCRE"; content:"GET /"; pcre:"/GET \//"; sid:1000007; rev:1;)
+alert tcp any any -> any any (msg:"TEST PCRE"; content:"GET /"; pcre:"/GET \\//"; sid:1000007; rev:1;)
+
+# PCRE with case insensitive
+alert tcp any any -> any any (msg:"TEST PCRE case insensitive"; content:"GET"; pcre:"/get \\//i"; sid:1000018; rev:1;)
+
+# PCRE with hex escape
+alert tcp any any -> any any (msg:"TEST PCRE hex"; pcre:"/\x47\x45\x54/"; sid:1000019; rev:1;)
+
+# === Flow Options ===
 
 # TCP with flow established
 alert tcp any any -> any any (msg:"TEST flow established"; content:"test"; flow:established; sid:1000008; rev:1;)
+
+# TCP with flow to_server
+alert tcp any any -> any any (msg:"TEST flow to_server"; content:"test"; flow:to_server; sid:1000020; rev:1;)
+
+# TCP with flow to_client
+alert tcp any any -> any any (msg:"TEST flow to_client"; content:"test"; flow:to_client; sid:1000021; rev:1;)
+
+# TCP with only_stream
+alert tcp any any -> any any (msg:"TEST only_stream"; content:"test"; flow:only_stream; sid:1000022; rev:1;)
+
+# === Content Options ===
 
 # TCP with negated content
 alert tcp any any -> any any (msg:"TEST negated content"; content:!"blocked"; sid:1000009; rev:1;)
 
 # Multiple contents
 alert tcp any any -> any any (msg:"TEST multiple contents"; content:"GET"; content:"HTTP"; sid:1000010; rev:1;)
+
+# Content with offset
+alert tcp any any -> any any (msg:"TEST content offset"; content:"test"; offset:5; sid:1000023; rev:1;)
+
+# Content with depth
+alert tcp any any -> any any (msg:"TEST content depth"; content:"test"; depth:20; sid:1000024; rev:1;)
+
+# Content with distance
+alert tcp any any -> any any (msg:"TEST content distance"; content:"GET"; content:"test"; distance:0; sid:1000025; rev:1;)
+
+# Content with within
+alert tcp any any -> any any (msg:"TEST content within"; content:"test"; within:10; sid:1000026; rev:1;)
+
+# === Direction Tests ===
+
+# Bidirectional
+alert tcp any any <> any any (msg:"TEST bidirectional"; content:"test"; sid:1000027; rev:1;)
+
+# === Action Tests ===
+
+# Alert (default)
+alert tcp any any -> any any (msg:"TEST alert action"; content:"test"; sid:1000028; rev:1;)
+
+# Pass (should be ignored by our tool)
+pass tcp any any -> any any (msg:"TEST pass action"; content:"test"; sid:1000029; rev:1;)
+
+# === Complex Rules ===
+
+# Multiple options
+alert tcp any any -> any 80 (msg:"TEST complex rule"; content:"GET"; nocase; pcre:"/GET \\//"; flow:to_server; sid:1000030; rev:1;)
