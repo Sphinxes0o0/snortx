@@ -1,6 +1,7 @@
 package packets
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -76,6 +77,7 @@ func (s *Sender) Close() {
 func (s *Sender) SendAndRecord(rule *rules.ParsedRule, packets []gopacket.Packet) SendResult {
 	var pcapFile string
 	var f *os.File
+	var bw *bufio.Writer
 	var err error
 
 	if s.Mode != ModeInject {
@@ -91,7 +93,9 @@ func (s *Sender) SendAndRecord(rule *rules.ParsedRule, packets []gopacket.Packet
 		}
 		defer f.Close()
 
-		w := pcapgo.NewWriter(f)
+		// Use buffered writer for better performance
+		bw = bufio.NewWriter(f)
+		w := pcapgo.NewWriter(bw)
 		if err := w.WriteFileHeader(65536, layers.LinkTypeEthernet); err != nil {
 			return SendResult{
 				RuleSID: rule.RuleID.SID,
@@ -119,7 +123,7 @@ func (s *Sender) SendAndRecord(rule *rules.ParsedRule, packets []gopacket.Packet
 			sent++
 		}
 
-		if s.Mode != ModeInject && f != nil {
+		if s.Mode != ModeInject && f != nil && bw != nil {
 			ci := pkt.Metadata().CaptureInfo
 			if ci.CaptureLength == 0 {
 				ci.CaptureLength = len(data)
@@ -131,10 +135,15 @@ func (s *Sender) SendAndRecord(rule *rules.ParsedRule, packets []gopacket.Packet
 				ci.Timestamp = time.Now()
 			}
 
-			if err := pcapgo.NewWriter(f).WritePacket(ci, data); err == nil {
+			if err := pcapgo.NewWriter(bw).WritePacket(ci, data); err == nil {
 				written++
 			}
 		}
+	}
+
+	// Flush buffer before closing
+	if bw != nil {
+		bw.Flush()
 	}
 
 	return SendResult{

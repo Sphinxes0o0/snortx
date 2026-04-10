@@ -2,8 +2,10 @@ package reports
 
 import (
 	"fmt"
+	"html/template"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -15,6 +17,38 @@ func NewHTMLGenerator(outputDir string) *HTMLGenerator {
 	return &HTMLGenerator{
 		OutputDir: outputDir,
 	}
+}
+
+type htmlRowData struct {
+	Protocol    string
+	Status      string
+	RuleSID     int
+	RuleMsg     string
+	PacketsSent int
+	Error       string
+	PCAPBase    string
+	PCAPPath    string
+}
+
+type htmlData struct {
+	CompletedAt  string
+	TotalRules   int
+	SuccessCount int
+	FailureCount int
+	SuccessRate  string
+	ProtoStats   []protoStat
+	ProtoOptions []string
+	Rows         []htmlRowData
+	TestRunID    string
+	TotalRows    int
+}
+
+type protoStat struct {
+	Proto        string
+	SuccessPct   int
+	FailedPct    int
+	SuccessCount int
+	Total        int
 }
 
 func (g *HTMLGenerator) Generate(result *TestRunResult) (string, error) {
@@ -30,65 +64,95 @@ func (g *HTMLGenerator) Generate(result *TestRunResult) (string, error) {
 	}
 
 	// Protocol breakdown
-	protoStats := make(map[string]map[string]int)
+	protoStatsMap := make(map[string]map[string]int)
 	protoList := []string{}
 	for _, r := range result.Results {
-		if _, ok := protoStats[r.Protocol]; !ok {
-			protoStats[r.Protocol] = map[string]int{"success": 0, "failed": 0}
+		if _, ok := protoStatsMap[r.Protocol]; !ok {
+			protoStatsMap[r.Protocol] = map[string]int{"success": 0, "failed": 0}
 			protoList = append(protoList, r.Protocol)
 		}
 		if r.Status == "success" {
-			protoStats[r.Protocol]["success"]++
+			protoStatsMap[r.Protocol]["success"]++
 		} else {
-			protoStats[r.Protocol]["failed"]++
+			protoStatsMap[r.Protocol]["failed"]++
 		}
 	}
 
-	protoBars := ""
+	protoStats := make([]protoStat, 0, len(protoList))
 	for _, proto := range protoList {
-		stats := protoStats[proto]
+		stats := protoStatsMap[proto]
 		total := stats["success"] + stats["failed"]
-		barWidth := 0
+		successPct := 0
+		failedPct := 0
 		if total > 0 {
-			barWidth = stats["success"] * 100 / total
+			successPct = stats["success"] * 100 / total
+			failedPct = 100 - successPct
 		}
-		protoBars += fmt.Sprintf(`<div class="proto-row">
-			<span class="proto-name">%s</span>
-			<div class="proto-bar-bg">
-				<div class="proto-bar proto-success" style="width: %d%%"></div>
-				<div class="proto-bar proto-failed" style="width: %d%%"></div>
-			</div>
-			<span class="proto-count">%d/%d</span>
-		</div>`, proto, barWidth, 100-barWidth, stats["success"], total)
+		protoStats = append(protoStats, protoStat{
+			Proto:        proto,
+			SuccessPct:   successPct,
+			FailedPct:    failedPct,
+			SuccessCount: stats["success"],
+			Total:        total,
+		})
 	}
 
-	rows := ""
+	// Build rows
+	rows := make([]htmlRowData, 0, len(result.Results))
 	for _, r := range result.Results {
-		statusClass := r.Status
-		if r.Status == "success" {
-			statusClass = "success"
-		} else {
-			statusClass = "failed"
-		}
-		errorInfo := ""
-		if r.Error != "" {
-			errorInfo = fmt.Sprintf(`<br><small class="error-msg" title="%s">%s</small>`, r.Error, r.Error)
-		}
-		pcapLink := "-"
+		pcapBase := ""
 		if r.PCAPPath != "" {
-			pcapLink = fmt.Sprintf(`<a href="file://%s">%s</a>`, r.PCAPPath, filepath.Base(r.PCAPPath))
+			pcapBase = filepath.Base(r.PCAPPath)
 		}
-		rows += fmt.Sprintf(`<tr data-protocol="%s" data-status="%s">
-			<td>%d</td>
-			<td>%s</td>
-			<td>%s</td>
-			<td>%d</td>
-			<td class="%s">%s%s</td>
-			<td>%s</td>
-		</tr>`, r.Protocol, r.Status, r.RuleSID, r.RuleMsg, r.Protocol, r.PacketsSent, statusClass, r.Status, errorInfo, pcapLink)
+		rows = append(rows, htmlRowData{
+			Protocol:    r.Protocol,
+			Status:      r.Status,
+			RuleSID:     r.RuleSID,
+			RuleMsg:     r.RuleMsg,
+			PacketsSent: r.PacketsSent,
+			Error:       r.Error,
+			PCAPBase:    pcapBase,
+			PCAPPath:    r.PCAPPath,
+		})
 	}
 
-	html := fmt.Sprintf(`<!DOCTYPE html>
+	data := htmlData{
+		CompletedAt:  result.CompletedAt.Format(time.RFC3339),
+		TotalRules:   result.TotalRules,
+		SuccessCount: result.SuccessCount,
+		FailureCount: result.FailureCount,
+		SuccessRate:  successRate,
+		ProtoStats:   protoStats,
+		ProtoOptions: protoList,
+		Rows:         rows,
+		TestRunID:    result.TestRunID,
+		TotalRows:    result.TotalRules,
+	}
+
+	tmpl := template.Must(template.New("report").Parse(htmlTemplate))
+	fname := filepath.Join(g.OutputDir, fmt.Sprintf("report_%s.html", result.TestRunID))
+	f, err := os.Create(fname)
+	if err != nil {
+		return "", fmt.Errorf("failed to create file: %w", err)
+	}
+	defer f.Close()
+
+	if err := tmpl.Execute(f, data); err != nil {
+		return "", fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	return fname, nil
+}
+
+func basename(path string) string {
+	idx := strings.LastIndex(path, "/")
+	if idx < 0 {
+		return path
+	}
+	return path[idx+1:]
+}
+
+const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
 	<meta charset="UTF-8">
@@ -116,11 +180,11 @@ func (g *HTMLGenerator) Generate(result *TestRunResult) (string, error) {
 		.proto-row { display: flex; align-items: center; margin-bottom: 10px; }
 		.proto-name { width: 60px; font-weight: 500; color: #333; }
 		.proto-bar-bg { flex: 1; height: 20px; background: #f0f0f0; border-radius: 4px; overflow: hidden; display: flex; }
-		.proto-bar { height: 100%%; }
+		.proto-bar { height: 100%; }
 		.proto-success { background: #4caf50; }
 		.proto-failed { background: #f44336; }
 		.proto-count { width: 80px; text-align: right; color: #666; font-size: 14px; }
-		table { width: 100%%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+		table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
 		th { background: #333; color: white; padding: 12px; text-align: left; cursor: pointer; user-select: none; }
 		th:hover { background: #444; }
 		td { padding: 12px; border-bottom: 1px solid #eee; }
@@ -135,30 +199,39 @@ func (g *HTMLGenerator) Generate(result *TestRunResult) (string, error) {
 <body>
 	<div class="container">
 		<h1>Snort Rule Test Report</h1>
-		<p>Generated: %s</p>
+		<p>Generated: {{.CompletedAt}}</p>
 
 		<div class="summary">
 			<div class="card total">
 				<h3>Total Rules</h3>
-				<div class="value">%d</div>
+				<div class="value">{{.TotalRules}}</div>
 			</div>
 			<div class="card success">
 				<h3>Successful</h3>
-				<div class="value">%d</div>
+				<div class="value">{{.SuccessCount}}</div>
 			</div>
 			<div class="card failed">
 				<h3>Failed</h3>
-				<div class="value">%d</div>
+				<div class="value">{{.FailureCount}}</div>
 			</div>
 			<div class="card success">
 				<h3>Success Rate</h3>
-				<div class="value">%s</div>
+				<div class="value">{{.SuccessRate}}</div>
 			</div>
 		</div>
 
 		<div class="proto-breakdown">
 			<h3>Protocol Breakdown</h3>
-			%s
+			{{range .ProtoStats}}
+			<div class="proto-row">
+				<span class="proto-name">{{.Proto}}</span>
+				<div class="proto-bar-bg">
+					<div class="proto-bar proto-success" style="width: {{.SuccessPct}}%"></div>
+					<div class="proto-bar proto-failed" style="width: {{.FailedPct}}%"></div>
+				</div>
+				<span class="proto-count">{{.SuccessCount}}/{{.Total}}</span>
+			</div>
+			{{end}}
 		</div>
 
 		<div class="controls">
@@ -167,7 +240,9 @@ func (g *HTMLGenerator) Generate(result *TestRunResult) (string, error) {
 			<label>Protocol:</label>
 			<select id="protocolFilter" onchange="filterTable()">
 				<option value="">All</option>
-				%s
+				{{range .ProtoOptions}}
+				<option value="{{.}}">{{.}}</option>
+				{{end}}
 			</select>
 			<label>Status:</label>
 			<select id="statusFilter" onchange="filterTable()">
@@ -175,7 +250,7 @@ func (g *HTMLGenerator) Generate(result *TestRunResult) (string, error) {
 				<option value="success">Success</option>
 				<option value="failed">Failed</option>
 			</select>
-			<span class="count" id="resultCount">Showing RESULTS_COUNT</span>
+			<span class="count" id="resultCount">Showing {{.TotalRows}}</span>
 		</div>
 		</div>
 
@@ -192,16 +267,25 @@ func (g *HTMLGenerator) Generate(result *TestRunResult) (string, error) {
 				</tr>
 			</thead>
 			<tbody>
-				%s
+				{{range .Rows}}
+				<tr data-protocol="{{.Protocol}}" data-status="{{.Status}}">
+					<td>{{.RuleSID}}</td>
+					<td>{{.RuleMsg}}</td>
+					<td>{{.Protocol}}</td>
+					<td>{{.PacketsSent}}</td>
+					<td class="{{if eq .Status "success"}}success{{else}}failed{{end}}">{{.Status}}{{if .Error}}<br><small class="error-msg" title="{{.Error}}">{{.Error}}</small>{{end}}</td>
+					<td>{{if .PCAPPath}}<a href="file://{{.PCAPPath}}">{{.PCAPBase}}</a>{{else}}-{{end}}</td>
+				</tr>
+				{{end}}
 			</tbody>
 		</table>
 
 		<div class="footer">
-			Generated by snortx | Test Run ID: %s
+			Generated by snortx | Test Run ID: {{.TestRunID}}
 		</div>
 	</div>
 	<script>
-		var totalRows = %d;
+		var totalRows = {{.TotalRows}};
 		function filterTable() {
 			var search = document.getElementById('searchInput').value.toLowerCase();
 			var protocol = document.getElementById('protocolFilter').value;
@@ -227,20 +311,4 @@ func (g *HTMLGenerator) Generate(result *TestRunResult) (string, error) {
 		}
 	</script>
 </body>
-</html>`, result.CompletedAt.Format(time.RFC3339), result.TotalRules, result.SuccessCount, result.FailureCount, successRate, protoBars, buildProtocolOptions(protoList), rows, result.TestRunID, result.TotalRules)
-
-	filename := filepath.Join(g.OutputDir, fmt.Sprintf("report_%s.html", result.TestRunID))
-	if err := os.WriteFile(filename, []byte(html), 0644); err != nil {
-		return "", fmt.Errorf("failed to write file: %w", err)
-	}
-
-	return filename, nil
-}
-
-func buildProtocolOptions(protoList []string) string {
-	var opts string
-	for _, p := range protoList {
-		opts += fmt.Sprintf(`<option value="%s">%s</option>`, p, p)
-	}
-	return opts
-}
+</html>`

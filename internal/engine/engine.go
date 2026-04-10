@@ -14,7 +14,6 @@ import (
 )
 
 type Engine struct {
-	parser    *rules.Parser
 	generator *packets.Generator
 	sender    *packets.Sender
 
@@ -26,10 +25,10 @@ type Engine struct {
 	mu sync.Mutex
 
 	testRunResult *reports.TestRunResult
+	pcreCache     map[string]*regexp.Regexp
 }
 
 type EngineConfig struct {
-	Parser      *rules.Parser
 	Generator   *packets.Generator
 	Sender      *packets.Sender
 	WorkerCount int
@@ -43,13 +42,13 @@ func New(cfg EngineConfig) (*Engine, error) {
 	}
 
 	e := &Engine{
-		parser:        cfg.Parser,
 		generator:     cfg.Generator,
 		sender:        cfg.Sender,
 		WorkerCount:   workerCount,
 		ruleChan:      make(chan *rules.ParsedRule, workerCount*2),
 		resultChan:    make(chan *packets.SendResult, workerCount*2),
 		testRunResult: reports.NewTestRunResult(),
+		pcreCache:     make(map[string]*regexp.Regexp),
 	}
 
 	e.testRunResult.TestRunID = fmt.Sprintf("run_%d", time.Now().Unix())
@@ -58,6 +57,11 @@ func New(cfg EngineConfig) (*Engine, error) {
 }
 
 func (e *Engine) Run(parsedRules []*rules.ParsedRule) (*reports.TestRunResult, error) {
+	// Reset channels and result for each run
+	e.ruleChan = make(chan *rules.ParsedRule, e.WorkerCount*2)
+	e.resultChan = make(chan *packets.SendResult, e.WorkerCount*2)
+	e.testRunResult = reports.NewTestRunResult()
+	e.testRunResult.TestRunID = fmt.Sprintf("run_%d", time.Now().Unix())
 	e.testRunResult.StartedAt = time.Now()
 
 	for i := 0; i < e.WorkerCount; i++ {
@@ -165,9 +169,16 @@ func (e *Engine) validatePCRE(pcreMatches []rules.PCREMatch, payload []byte) err
 			pattern = "(?s)" + pattern
 		}
 
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			return fmt.Errorf("invalid PCRE pattern: %v", err)
+		// Check cache first
+		cacheKey := pattern
+		re, found := e.pcreCache[cacheKey]
+		if !found {
+			var err error
+			re, err = regexp.Compile(pattern)
+			if err != nil {
+				return fmt.Errorf("invalid PCRE pattern: %v", err)
+			}
+			e.pcreCache[cacheKey] = re
 		}
 
 		if !re.Match(payload) {
@@ -179,8 +190,6 @@ func (e *Engine) validatePCRE(pcreMatches []rules.PCREMatch, payload []byte) err
 }
 
 func (e *Engine) Stop() {
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	close(e.ruleChan)
 	e.wg.Wait()
 }

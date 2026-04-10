@@ -1,6 +1,8 @@
 package packets
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"regexp"
@@ -18,6 +20,8 @@ type Generator struct {
 	DefaultSrcPort uint16
 	DefaultDstPort uint16
 	Vars           map[string]string
+	RandomMAC      bool
+	RandomSeq      bool
 }
 
 func NewGenerator() *Generator {
@@ -34,7 +38,35 @@ func NewGenerator() *Generator {
 			"$DNS_SERVERS":  "any",
 			"$SSH_SERVERS":  "any",
 		},
+		RandomMAC: false,
+		RandomSeq: false,
 	}
+}
+
+// randomMAC generates a random MAC address with the local bit set
+func randomMAC() net.HardwareAddr {
+	mac := make([]byte, 6)
+	rand.Read(mac)
+	// Set local bit and clear multicast bit
+	mac[0] = (mac[0] & 0xfe) | 0x02
+	return net.HardwareAddr(mac)
+}
+
+var defaultSrcMAC = net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x01}
+var defaultDstMAC = net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x02}
+
+func (g *Generator) srcMAC() net.HardwareAddr {
+	if g.RandomMAC {
+		return randomMAC()
+	}
+	return defaultSrcMAC
+}
+
+func (g *Generator) dstMAC() net.HardwareAddr {
+	if g.RandomMAC {
+		return randomMAC()
+	}
+	return defaultDstMAC
 }
 
 func (g *Generator) Generate(rule *rules.ParsedRule) ([]gopacket.Packet, error) {
@@ -52,6 +84,10 @@ func (g *Generator) Generate(rule *rules.ParsedRule) ([]gopacket.Packet, error) 
 		pkts, err = g.buildIP(rule, false)
 	case "sctp":
 		pkts, err = g.buildSCTP(rule, false)
+	case "dns":
+		pkts, err = g.buildDNS(rule, false)
+	case "arp":
+		pkts, err = g.buildARP(rule, false)
 	default:
 		return nil, fmt.Errorf("unsupported protocol: %s", rule.Protocol)
 	}
@@ -73,6 +109,10 @@ func (g *Generator) Generate(rule *rules.ParsedRule) ([]gopacket.Packet, error) 
 			reversePkts, err = g.buildIP(rule, true)
 		case "sctp":
 			reversePkts, err = g.buildSCTP(rule, true)
+		case "dns":
+			reversePkts, err = g.buildDNS(rule, true)
+		case "arp":
+			reversePkts, err = g.buildARP(rule, true)
 		}
 		if err == nil {
 			pkts = append(pkts, reversePkts...)
@@ -80,6 +120,182 @@ func (g *Generator) Generate(rule *rules.ParsedRule) ([]gopacket.Packet, error) 
 	}
 
 	return pkts, nil
+}
+
+func (g *Generator) buildARP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Packet, error) {
+	srcIP := g.expandIP(rule.SrcNet)
+	dstIP := g.expandIP(rule.DstNet)
+
+	if reverse {
+		srcIP, dstIP = dstIP, srcIP
+	}
+
+	payload := g.buildPayload(rule.Contents, rule.PCREMatches)
+
+	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+
+	buf := gopacket.NewSerializeBuffer()
+
+	// ARP Request: Who has dstIP? Tell srcIP
+	// ARP Reply: srcIP is at my MAC
+	arp := &layers.ARP{
+		AddrType:          layers.LinkTypeEthernet,
+		Protocol:          layers.EthernetTypeIPv4,
+		HwAddressSize:     6,
+		ProtAddressSize:  4,
+		Operation:         layers.ARPRequest,
+		SourceHwAddress:   []byte(g.srcMAC()),
+		SourceProtAddress: net.ParseIP(srcIP).To4(),
+		DstHwAddress:     []byte{0, 0, 0, 0, 0, 0},
+		DstProtAddress:   net.ParseIP(dstIP).To4(),
+	}
+
+	eth := &layers.Ethernet{
+		SrcMAC:       g.srcMAC(),
+		DstMAC:       net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, // Broadcast
+		EthernetType: layers.EthernetTypeARP,
+	}
+
+	if err := gopacket.SerializeLayers(buf, opts, eth, arp, gopacket.Payload(payload)); err != nil {
+		return nil, err
+	}
+
+	packet := gopacket.NewPacket(buf.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
+	return []gopacket.Packet{packet}, nil
+}
+
+func (g *Generator) buildDNS(rule *rules.ParsedRule, reverse bool) ([]gopacket.Packet, error) {
+	srcIP := g.expandIP(rule.SrcNet)
+	dstIP := g.expandIP(rule.DstNet)
+	srcPort := g.expandPort(rule.SrcPorts)
+	dstPort := g.expandPort(rule.DstPorts)
+
+	if reverse {
+		srcIP, dstIP = dstIP, srcIP
+		srcPort, dstPort = dstPort, srcPort
+	}
+
+	// Default DNS ports
+	if dstPort == 0 {
+		dstPort = 53
+	}
+	if srcPort == 0 {
+		srcPort = 12345
+	}
+
+	payload := g.buildDNSQueryPayload(rule.Contents)
+
+	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+
+	srcIPParsed := net.ParseIP(srcIP)
+	dstIPParsed := net.ParseIP(dstIP)
+
+	buf := gopacket.NewSerializeBuffer()
+
+	if srcIPParsed.To4() != nil || dstIPParsed.To4() != nil {
+		// IPv4
+		eth := &layers.Ethernet{
+			SrcMAC:       g.srcMAC(),
+			DstMAC:       g.dstMAC(),
+			EthernetType: layers.EthernetTypeIPv4,
+		}
+		ip := &layers.IPv4{
+			SrcIP:    srcIPParsed,
+			DstIP:    dstIPParsed,
+			Protocol: layers.IPProtocolUDP,
+			Version:  4,
+			IHL:      5,
+			TTL:      64,
+		}
+		udp := &layers.UDP{
+			SrcPort: layers.UDPPort(srcPort),
+			DstPort: layers.UDPPort(dstPort),
+		}
+		udp.SetNetworkLayerForChecksum(ip)
+		if err := gopacket.SerializeLayers(buf, opts, eth, ip, udp, gopacket.Payload(payload)); err != nil {
+			return nil, err
+		}
+	} else {
+		// IPv6
+		eth := &layers.Ethernet{
+			SrcMAC:       g.srcMAC(),
+			DstMAC:       g.dstMAC(),
+			EthernetType: layers.EthernetTypeIPv6,
+		}
+		ip6 := &layers.IPv6{
+			SrcIP:      srcIPParsed,
+			DstIP:      dstIPParsed,
+			Version:    6,
+			HopLimit:   64,
+			NextHeader: layers.IPProtocolUDP,
+		}
+		udp := &layers.UDP{
+			SrcPort: layers.UDPPort(srcPort),
+			DstPort: layers.UDPPort(dstPort),
+		}
+		udp.SetNetworkLayerForChecksum(ip6)
+		if err := gopacket.SerializeLayers(buf, opts, eth, ip6, udp, gopacket.Payload(payload)); err != nil {
+			return nil, err
+		}
+	}
+
+	packet := gopacket.NewPacket(buf.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
+	return []gopacket.Packet{packet}, nil
+}
+
+func (g *Generator) buildDNSQueryPayload(contents []rules.ContentMatch) []byte {
+	if len(contents) > 0 {
+		// Use content match as the query domain
+		var domain []byte
+		for _, c := range contents {
+			domain = append(domain, c.Raw...)
+		}
+		return g.buildDNSQuery(domain)
+	}
+	// Default query for example.com
+	return g.buildDNSQuery([]byte("example.com"))
+}
+
+func (g *Generator) buildDNSQuery(domain []byte) []byte {
+	// Build a basic DNS query packet
+	buf := make([]byte, 0)
+
+	// Transaction ID (2 bytes)
+	buf = append(buf, 0x00, 0x01)
+
+	// Flags: standard query (2 bytes)
+	// 0x0100 = QR=0 (query), OPCODE=0 (standard), AA=0, TC=0, RD=0
+	// 0x0000 = RA=0, Z=0, RCODE=0
+	buf = append(buf, 0x01, 0x00)
+
+	// Questions count (2 bytes) - 1 question
+	buf = append(buf, 0x00, 0x01)
+
+	// Answer RRs (2 bytes) - 0
+	buf = append(buf, 0x00, 0x00)
+
+	// Authority RRs (2 bytes) - 0
+	buf = append(buf, 0x00, 0x00)
+
+	// Additional RRs (2 bytes) - 0
+	buf = append(buf, 0x00, 0x00)
+
+	// Query name (domain)
+	domainStr := string(domain)
+	labels := strings.Split(domainStr, ".")
+	for _, label := range labels {
+		buf = append(buf, byte(len(label)))
+		buf = append(buf, label...)
+	}
+	buf = append(buf, 0x00) // Null terminator
+
+	// Query type (2 bytes) - A (host address) = 1
+	buf = append(buf, 0x00, 0x01)
+
+	// Query class (2 bytes) - IN (internet) = 1
+	buf = append(buf, 0x00, 0x01)
+
+	return buf
 }
 
 func (g *Generator) buildTCP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Packet, error) {
@@ -97,30 +313,101 @@ func (g *Generator) buildTCP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 
-	eth := &layers.Ethernet{
-		SrcMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
-		DstMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x02},
-		EthernetType: layers.EthernetTypeIPv4,
-	}
-
-	ip := &layers.IPv4{
-		SrcIP:    net.ParseIP(srcIP),
-		DstIP:    net.ParseIP(dstIP),
-		Protocol: layers.IPProtocolTCP,
-		Version:  4,
-		IHL:      5,
-		TTL:      64,
-	}
-
-	tcp := g.buildTCPFlags(rule, reverse)
-
-	tcp.SetNetworkLayerForChecksum(ip)
+	srcIPParsed := net.ParseIP(srcIP)
+	dstIPParsed := net.ParseIP(dstIP)
 
 	buf := gopacket.NewSerializeBuffer()
-	var err error
-	err = gopacket.SerializeLayers(buf, opts, eth, ip, tcp, gopacket.Payload(payload))
-	if err != nil {
-		return nil, err
+
+	if rule.VLANID > 0 {
+		if srcIPParsed.To4() != nil || dstIPParsed.To4() != nil {
+			// IPv4 with VLAN
+			eth := &layers.Ethernet{
+				SrcMAC:       g.srcMAC(),
+				DstMAC:       g.dstMAC(),
+				EthernetType: layers.EthernetTypeDot1Q,
+			}
+			vlan := &layers.Dot1Q{
+				VLANIdentifier: rule.VLANID,
+				Type:           layers.EthernetTypeIPv4,
+			}
+			ip := &layers.IPv4{
+				SrcIP:    srcIPParsed,
+				DstIP:    dstIPParsed,
+				Protocol: layers.IPProtocolTCP,
+				Version:  4,
+				IHL:      5,
+				TTL:      64,
+			}
+			tcp := g.buildTCPFlags(rule, reverse)
+			tcp.SetNetworkLayerForChecksum(ip)
+			if err := gopacket.SerializeLayers(buf, opts, eth, vlan, ip, tcp, gopacket.Payload(payload)); err != nil {
+				return nil, err
+			}
+		} else {
+			// IPv6 with VLAN
+			eth := &layers.Ethernet{
+				SrcMAC:       g.srcMAC(),
+				DstMAC:       g.dstMAC(),
+				EthernetType: layers.EthernetTypeDot1Q,
+			}
+			vlan := &layers.Dot1Q{
+				VLANIdentifier: rule.VLANID,
+				Type:           layers.EthernetTypeIPv6,
+			}
+			ip6 := &layers.IPv6{
+				SrcIP:      srcIPParsed,
+				DstIP:      dstIPParsed,
+				Version:    6,
+				HopLimit:   64,
+				NextHeader: layers.IPProtocolTCP,
+			}
+			tcp := g.buildTCPFlags(rule, reverse)
+			tcp.SetNetworkLayerForChecksum(ip6)
+			if err := gopacket.SerializeLayers(buf, opts, eth, vlan, ip6, tcp, gopacket.Payload(payload)); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		if srcIPParsed.To4() != nil || dstIPParsed.To4() != nil {
+			// IPv4
+			eth := &layers.Ethernet{
+				SrcMAC:       g.srcMAC(),
+				DstMAC:       g.dstMAC(),
+				EthernetType: layers.EthernetTypeIPv4,
+			}
+			ip := &layers.IPv4{
+				SrcIP:    srcIPParsed,
+				DstIP:    dstIPParsed,
+				Protocol: layers.IPProtocolTCP,
+				Version:  4,
+				IHL:      5,
+				TTL:      64,
+			}
+			tcp := g.buildTCPFlags(rule, reverse)
+			tcp.SetNetworkLayerForChecksum(ip)
+			if err := gopacket.SerializeLayers(buf, opts, eth, ip, tcp, gopacket.Payload(payload)); err != nil {
+				return nil, err
+			}
+		} else {
+			// IPv6
+			eth := &layers.Ethernet{
+				SrcMAC:       g.srcMAC(),
+				DstMAC:       g.dstMAC(),
+				EthernetType: layers.EthernetTypeIPv6,
+			}
+			ip6 := &layers.IPv6{
+				SrcIP:      srcIPParsed,
+				DstIP:      dstIPParsed,
+				Version:    6,
+				HopLimit:   64,
+				NextHeader: layers.IPProtocolTCP,
+			}
+			tcp := g.buildTCPFlags(rule, reverse)
+			tcp.SetNetworkLayerForChecksum(ip6)
+			if err := gopacket.SerializeLayers(buf, opts, eth, ip6, tcp, gopacket.Payload(payload)); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	packet := gopacket.NewPacket(buf.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
@@ -135,10 +422,17 @@ func (g *Generator) buildTCPFlags(rule *rules.ParsedRule, reverse bool) *layers.
 		srcPort, dstPort = dstPort, srcPort
 	}
 
+	seq := uint32(100)
+	if g.RandomSeq {
+		var b [4]byte
+		rand.Read(b[:])
+		seq = binary.BigEndian.Uint32(b[:])
+	}
+
 	tcp := &layers.TCP{
 		SrcPort: layers.TCPPort(srcPort),
 		DstPort: layers.TCPPort(dstPort),
-		Seq:     100,
+		Seq:     seq,
 		Window:  65535,
 		SYN:     true,
 		ACK:     true,
@@ -193,32 +487,113 @@ func (g *Generator) buildUDP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 
-	eth := &layers.Ethernet{
-		SrcMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
-		DstMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x02},
-		EthernetType: layers.EthernetTypeIPv4,
-	}
-
-	ip := &layers.IPv4{
-		SrcIP:    net.ParseIP(srcIP),
-		DstIP:    net.ParseIP(dstIP),
-		Protocol: layers.IPProtocolUDP,
-		Version:  4,
-		IHL:      5,
-		TTL:      64,
-	}
-
-	udp := &layers.UDP{
-		SrcPort: layers.UDPPort(srcPort),
-		DstPort: layers.UDPPort(dstPort),
-	}
-
-	udp.SetNetworkLayerForChecksum(ip)
+	srcIPParsed := net.ParseIP(srcIP)
+	dstIPParsed := net.ParseIP(dstIP)
 
 	buf := gopacket.NewSerializeBuffer()
-	err := gopacket.SerializeLayers(buf, opts, eth, ip, udp, gopacket.Payload(payload))
-	if err != nil {
-		return nil, err
+
+	if rule.VLANID > 0 {
+		if srcIPParsed.To4() != nil || dstIPParsed.To4() != nil {
+			// IPv4 with VLAN
+			eth := &layers.Ethernet{
+				SrcMAC:       g.srcMAC(),
+				DstMAC:       g.dstMAC(),
+				EthernetType: layers.EthernetTypeDot1Q,
+			}
+			vlan := &layers.Dot1Q{
+				VLANIdentifier: rule.VLANID,
+				Type:           layers.EthernetTypeIPv4,
+			}
+			ip := &layers.IPv4{
+				SrcIP:    srcIPParsed,
+				DstIP:    dstIPParsed,
+				Protocol: layers.IPProtocolUDP,
+				Version:  4,
+				IHL:      5,
+				TTL:      64,
+			}
+			udp := &layers.UDP{
+				SrcPort: layers.UDPPort(srcPort),
+				DstPort: layers.UDPPort(dstPort),
+			}
+			udp.SetNetworkLayerForChecksum(ip)
+			if err := gopacket.SerializeLayers(buf, opts, eth, vlan, ip, udp, gopacket.Payload(payload)); err != nil {
+				return nil, err
+			}
+		} else {
+			// IPv6 with VLAN
+			eth := &layers.Ethernet{
+				SrcMAC:       g.srcMAC(),
+				DstMAC:       g.dstMAC(),
+				EthernetType: layers.EthernetTypeDot1Q,
+			}
+			vlan := &layers.Dot1Q{
+				VLANIdentifier: rule.VLANID,
+				Type:           layers.EthernetTypeIPv6,
+			}
+			ip6 := &layers.IPv6{
+				SrcIP:      srcIPParsed,
+				DstIP:      dstIPParsed,
+				Version:    6,
+				HopLimit:   64,
+				NextHeader: layers.IPProtocolUDP,
+			}
+			udp := &layers.UDP{
+				SrcPort: layers.UDPPort(srcPort),
+				DstPort: layers.UDPPort(dstPort),
+			}
+			udp.SetNetworkLayerForChecksum(ip6)
+			if err := gopacket.SerializeLayers(buf, opts, eth, vlan, ip6, udp, gopacket.Payload(payload)); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		if srcIPParsed.To4() != nil || dstIPParsed.To4() != nil {
+			// IPv4
+			eth := &layers.Ethernet{
+				SrcMAC:       g.srcMAC(),
+				DstMAC:       g.dstMAC(),
+				EthernetType: layers.EthernetTypeIPv4,
+			}
+			ip := &layers.IPv4{
+				SrcIP:    srcIPParsed,
+				DstIP:    dstIPParsed,
+				Protocol: layers.IPProtocolUDP,
+				Version:  4,
+				IHL:      5,
+				TTL:      64,
+			}
+			udp := &layers.UDP{
+				SrcPort: layers.UDPPort(srcPort),
+				DstPort: layers.UDPPort(dstPort),
+			}
+			udp.SetNetworkLayerForChecksum(ip)
+			if err := gopacket.SerializeLayers(buf, opts, eth, ip, udp, gopacket.Payload(payload)); err != nil {
+				return nil, err
+			}
+		} else {
+			// IPv6
+			eth := &layers.Ethernet{
+				SrcMAC:       g.srcMAC(),
+				DstMAC:       g.dstMAC(),
+				EthernetType: layers.EthernetTypeIPv6,
+			}
+			ip6 := &layers.IPv6{
+				SrcIP:      srcIPParsed,
+				DstIP:      dstIPParsed,
+				Version:    6,
+				HopLimit:   64,
+				NextHeader: layers.IPProtocolUDP,
+			}
+			udp := &layers.UDP{
+				SrcPort: layers.UDPPort(srcPort),
+				DstPort: layers.UDPPort(dstPort),
+			}
+			udp.SetNetworkLayerForChecksum(ip6)
+			if err := gopacket.SerializeLayers(buf, opts, eth, ip6, udp, gopacket.Payload(payload)); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	packet := gopacket.NewPacket(buf.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
@@ -238,8 +613,8 @@ func (g *Generator) buildICMP(rule *rules.ParsedRule, reverse bool) ([]gopacket.
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 
 	eth := &layers.Ethernet{
-		SrcMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
-		DstMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x02},
+		SrcMAC:       g.srcMAC(),
+		DstMAC:       g.dstMAC(),
 		EthernetType: layers.EthernetTypeIPv4,
 	}
 
@@ -286,8 +661,8 @@ func (g *Generator) buildIP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Pa
 	if srcIPParsed.To4() != nil || dstIPParsed.To4() != nil {
 		// IPv4
 		eth := &layers.Ethernet{
-			SrcMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
-			DstMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x02},
+			SrcMAC:       g.srcMAC(),
+			DstMAC:       g.dstMAC(),
 			EthernetType: layers.EthernetTypeIPv4,
 		}
 		ip := &layers.IPv4{
@@ -304,8 +679,8 @@ func (g *Generator) buildIP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Pa
 	} else {
 		// IPv6
 		eth := &layers.Ethernet{
-			SrcMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
-			DstMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x02},
+			SrcMAC:       g.srcMAC(),
+			DstMAC:       g.dstMAC(),
 			EthernetType: layers.EthernetTypeIPv6,
 		}
 		ip6 := &layers.IPv6{
@@ -340,32 +715,56 @@ func (g *Generator) buildSCTP(rule *rules.ParsedRule, reverse bool) ([]gopacket.
 
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 
-	eth := &layers.Ethernet{
-		SrcMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
-		DstMAC:       net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x02},
-		EthernetType: layers.EthernetTypeIPv4,
-	}
-
-	ip := &layers.IPv4{
-		SrcIP:    net.ParseIP(srcIP),
-		DstIP:    net.ParseIP(dstIP),
-		Protocol: layers.IPProtocolSCTP,
-		Version:  4,
-		IHL:      5,
-		TTL:      64,
-	}
-
-	sctp := &layers.SCTP{
-		SrcPort:  layers.SCTPPort(srcPort),
-		DstPort:  layers.SCTPPort(dstPort),
-	}
-
-	// SCTP checksum is optional in some contexts, skip SetNetworkLayerForChecksum
+	srcIPParsed := net.ParseIP(srcIP)
+	dstIPParsed := net.ParseIP(dstIP)
 
 	buf := gopacket.NewSerializeBuffer()
-	err := gopacket.SerializeLayers(buf, opts, eth, ip, sctp, gopacket.Payload(payload))
-	if err != nil {
-		return nil, err
+
+	if srcIPParsed.To4() != nil || dstIPParsed.To4() != nil {
+		// IPv4
+		eth := &layers.Ethernet{
+			SrcMAC:       g.srcMAC(),
+			DstMAC:       g.dstMAC(),
+			EthernetType: layers.EthernetTypeIPv4,
+		}
+		ip := &layers.IPv4{
+			SrcIP:    srcIPParsed,
+			DstIP:    dstIPParsed,
+			Protocol: layers.IPProtocolSCTP,
+			Version:  4,
+			IHL:      5,
+			TTL:      64,
+		}
+		sctp := &layers.SCTP{
+			SrcPort: layers.SCTPPort(srcPort),
+			DstPort: layers.SCTPPort(dstPort),
+		}
+		err := gopacket.SerializeLayers(buf, opts, eth, ip, sctp, gopacket.Payload(payload))
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// IPv6
+		eth := &layers.Ethernet{
+			SrcMAC:       g.srcMAC(),
+			DstMAC:       g.dstMAC(),
+			EthernetType: layers.EthernetTypeIPv6,
+		}
+		ip6 := &layers.IPv6{
+			SrcIP:      srcIPParsed,
+			DstIP:      dstIPParsed,
+			Version:    6,
+			HopLimit:   64,
+			NextHeader: layers.IPProtocolSCTP,
+		}
+		sctp := &layers.SCTP{
+			SrcPort: layers.SCTPPort(srcPort),
+			DstPort: layers.SCTPPort(dstPort),
+		}
+		err := gopacket.SerializeLayers(buf, opts, eth, ip6, sctp, gopacket.Payload(payload))
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	packet := gopacket.NewPacket(buf.Bytes(), layers.LayerTypeEthernet, gopacket.Default)

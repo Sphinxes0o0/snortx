@@ -12,24 +12,24 @@ func TestParser_ParseRule(t *testing.T) {
 		name    string
 		rule    string
 		wantErr bool
-		check   func(*ParsedRule)
+		check   func(*testing.T, *ParsedRule)
 	}{
 		{
 			name:    "basic TCP rule",
 			rule:    `alert tcp any any -> any any (msg:"TEST"; content:"test"; sid:1; rev:1;)`,
 			wantErr: false,
-			check: func(r *ParsedRule) {
+			check: func(tt *testing.T, r *ParsedRule) {
 				if r.Protocol != "tcp" {
-					t.Errorf("expected protocol tcp, got %s", r.Protocol)
+					tt.Errorf("expected protocol tcp, got %s", r.Protocol)
 				}
 				if r.RuleID.SID != 1 {
-					t.Errorf("expected SID 1, got %d", r.RuleID.SID)
+					tt.Errorf("expected SID 1, got %d", r.RuleID.SID)
 				}
 				if r.Msg != "TEST" {
-					t.Errorf("expected msg TEST, got %s", r.Msg)
+					tt.Errorf("expected msg TEST, got %s", r.Msg)
 				}
 				if len(r.Contents) != 1 {
-					t.Errorf("expected 1 content match, got %d", len(r.Contents))
+					tt.Errorf("expected 1 content match, got %d", len(r.Contents))
 				}
 			},
 		},
@@ -37,15 +37,15 @@ func TestParser_ParseRule(t *testing.T) {
 			name:    "TCP with hex content",
 			rule:    `alert tcp any any -> any any (msg:"TEST"; content:"|48 65 6c 6c 6f|"; sid:2; rev:1;)`,
 			wantErr: false,
-			check: func(r *ParsedRule) {
+			check: func(tt *testing.T, r *ParsedRule) {
 				if len(r.Contents) != 1 {
-					t.Fatalf("expected 1 content, got %d", len(r.Contents))
+					tt.Fatalf("expected 1 content, got %d", len(r.Contents))
 				}
 				if string(r.Contents[0].Raw) != "Hello" {
-					t.Errorf("expected 'Hello', got %x", r.Contents[0].Raw)
+					tt.Errorf("expected 'Hello', got %x", r.Contents[0].Raw)
 				}
 				if !r.Contents[0].IsHex {
-					t.Error("expected IsHex to be true")
+					tt.Error("expected IsHex to be true")
 				}
 			},
 		},
@@ -53,12 +53,12 @@ func TestParser_ParseRule(t *testing.T) {
 			name:    "content with negation",
 			rule:    `alert tcp any any -> any any (msg:"TEST"; content:!"test"; sid:3; rev:1;)`,
 			wantErr: false,
-			check: func(r *ParsedRule) {
+			check: func(tt *testing.T, r *ParsedRule) {
 				if len(r.Contents) != 1 {
-					t.Fatalf("expected 1 content, got %d", len(r.Contents))
+					tt.Fatalf("expected 1 content, got %d", len(r.Contents))
 				}
 				if !r.Contents[0].IsNegated {
-					t.Error("expected IsNegated to be true")
+					tt.Error("expected IsNegated to be true")
 				}
 			},
 		},
@@ -66,12 +66,12 @@ func TestParser_ParseRule(t *testing.T) {
 			name:    "content with nocase",
 			rule:    `alert tcp any any -> any any (msg:"TEST"; content:"test"; nocase; sid:4; rev:1;)`,
 			wantErr: false,
-			check: func(r *ParsedRule) {
+			check: func(tt *testing.T, r *ParsedRule) {
 				if len(r.Contents) != 1 {
-					t.Fatalf("expected 1 content, got %d", len(r.Contents))
+					tt.Fatalf("expected 1 content, got %d", len(r.Contents))
 				}
 				if !r.Contents[0].Nocase {
-					t.Error("expected Nocase to be true")
+					tt.Error("expected Nocase to be true")
 				}
 			},
 		},
@@ -79,9 +79,9 @@ func TestParser_ParseRule(t *testing.T) {
 			name:    "TCP with flow established",
 			rule:    `alert tcp any any -> any any (msg:"TEST"; content:"test"; flow:established; sid:5; rev:1;)`,
 			wantErr: false,
-			check: func(r *ParsedRule) {
+			check: func(tt *testing.T, r *ParsedRule) {
 				if r.Flow != "established" {
-					t.Errorf("expected flow 'established', got %s", r.Flow)
+					tt.Errorf("expected flow 'established', got %s", r.Flow)
 				}
 			},
 		},
@@ -89,15 +89,15 @@ func TestParser_ParseRule(t *testing.T) {
 			name:    "TCP with offset and depth",
 			rule:    `alert tcp any any -> any any (msg:"TEST"; content:"test"; offset:5; depth:10; sid:6; rev:1;)`,
 			wantErr: false,
-			check: func(r *ParsedRule) {
+			check: func(tt *testing.T, r *ParsedRule) {
 				if len(r.Contents) != 1 {
-					t.Fatalf("expected 1 content, got %d", len(r.Contents))
+					tt.Fatalf("expected 1 content, got %d", len(r.Contents))
 				}
 				if r.Contents[0].Offset == nil || *r.Contents[0].Offset != 5 {
-					t.Error("expected offset 5")
+					tt.Error("expected offset 5")
 				}
 				if r.Contents[0].Depth == nil || *r.Contents[0].Depth != 10 {
-					t.Error("expected depth 10")
+					tt.Error("expected depth 10")
 				}
 			},
 		},
@@ -105,9 +105,9 @@ func TestParser_ParseRule(t *testing.T) {
 			name:    "UDP rule",
 			rule:    `alert udp any any -> any any (msg:"UDP"; content:"test"; sid:7; rev:1;)`,
 			wantErr: false,
-			check: func(r *ParsedRule) {
+			check: func(tt *testing.T, r *ParsedRule) {
 				if r.Protocol != "udp" {
-					t.Errorf("expected protocol udp, got %s", r.Protocol)
+					tt.Errorf("expected protocol udp, got %s", r.Protocol)
 				}
 			},
 		},
@@ -115,9 +115,9 @@ func TestParser_ParseRule(t *testing.T) {
 			name:    "ICMP rule",
 			rule:    `alert icmp any any -> any any (msg:"ICMP"; content:"ping"; sid:8; rev:1;)`,
 			wantErr: false,
-			check: func(r *ParsedRule) {
+			check: func(tt *testing.T, r *ParsedRule) {
 				if r.Protocol != "icmp" {
-					t.Errorf("expected protocol icmp, got %s", r.Protocol)
+					tt.Errorf("expected protocol icmp, got %s", r.Protocol)
 				}
 			},
 		},
@@ -125,9 +125,9 @@ func TestParser_ParseRule(t *testing.T) {
 			name:    "IP rule",
 			rule:    `alert ip any any -> any any (msg:"IP"; sid:9; rev:1;)`,
 			wantErr: false,
-			check: func(r *ParsedRule) {
+			check: func(tt *testing.T, r *ParsedRule) {
 				if r.Protocol != "ip" {
-					t.Errorf("expected protocol ip, got %s", r.Protocol)
+					tt.Errorf("expected protocol ip, got %s", r.Protocol)
 				}
 			},
 		},
@@ -135,12 +135,12 @@ func TestParser_ParseRule(t *testing.T) {
 			name:    "rule with gid and sid",
 			rule:    `alert tcp any any -> any any (msg:"TEST"; content:"test"; gid:3; sid:100; rev:1;)`,
 			wantErr: false,
-			check: func(r *ParsedRule) {
+			check: func(tt *testing.T, r *ParsedRule) {
 				if r.RuleID.GID != 3 {
-					t.Errorf("expected GID 3, got %d", r.RuleID.GID)
+					tt.Errorf("expected GID 3, got %d", r.RuleID.GID)
 				}
 				if r.RuleID.SID != 100 {
-					t.Errorf("expected SID 100, got %d", r.RuleID.SID)
+					tt.Errorf("expected SID 100, got %d", r.RuleID.SID)
 				}
 			},
 		},
@@ -159,14 +159,14 @@ func TestParser_ParseRule(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run(tt.name, func(st *testing.T) {
 			r, err := parser.ParseRule(tt.rule)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseRule() error = %v, wantErr %v", err, tt.wantErr)
+				st.Errorf("ParseRule() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if tt.check != nil && r != nil {
-				tt.check(r)
+				tt.check(st, r)
 			}
 		})
 	}
@@ -181,12 +181,12 @@ alert tcp any any -> any any (msg:"TEST 1"; content:"test"; sid:1; rev:1;)
 
 alert udp any any -> any any (msg:"TEST 2"; content:"test"; sid:2; rev:1;)
 `
-	rules, err := parser.ParseMulti(text)
+	result, err := parser.ParseMulti(text)
 	if err != nil {
 		t.Fatalf("ParseMulti() error = %v", err)
 	}
-	if len(rules) != 2 {
-		t.Errorf("expected 2 rules, got %d", len(rules))
+	if len(result.Rules) != 2 {
+		t.Errorf("expected 2 rules, got %d", len(result.Rules))
 	}
 }
 

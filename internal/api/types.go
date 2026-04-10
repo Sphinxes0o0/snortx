@@ -20,10 +20,11 @@ type ParseError struct {
 }
 
 type TestRunRequest struct {
-	Rules    string   `json:"rules"`
-	RuleIDs  []int    `json:"rule_ids,omitempty"`
-	AllRules bool     `json:"all_rules"`
-	Format   string   `json:"format"`
+	Rules     string   `json:"rules"`
+	RuleIDs   []int    `json:"rule_ids,omitempty"`
+	AllRules  bool     `json:"all_rules"`
+	Format    string   `json:"format"`
+	Interface string   `json:"interface"`
 }
 
 type TestRunResponse struct {
@@ -39,4 +40,25 @@ type ErrorResponse struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Details string `json:"details,omitempty"`
+}
+
+type TestResultsResponse struct {
+	TestRunID    string                 `json:"test_run_id"`
+	TotalResults int                    `json:"total_results"`
+	Page         int                    `json:"page"`
+	PageSize     int                    `json:"page_size"`
+	TotalPages   int                    `json:"total_pages"`
+	Results      []*TestResultItem      `json:"results"`
+}
+
+type TestResultItem struct {
+	RuleSID     int      `json:"rule_sid"`
+	RuleMsg     string   `json:"rule_msg"`
+	Protocol    string   `json:"protocol"`
+	PacketsGen  int      `json:"packets_gen"`
+	PacketsSent int      `json:"packets_sent"`
+	PCAPPath    string   `json:"pcap_path"`
+	Status      string   `json:"status"`
+	Error       string   `json:"error,omitempty"`
+	Duration    string   `json:"duration"`
 }

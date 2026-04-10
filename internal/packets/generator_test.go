@@ -80,12 +80,20 @@ func TestGenerator_Generate(t *testing.T) {
 			wantErr:   false,
 		},
 		{
-			name: "Unsupported protocol",
+			name: "ARP rule",
 			rule: &rules.ParsedRule{
-				Protocol: "arp",
+				Protocol:  "arp",
+				SrcNet:    "192.168.1.1",
+				DstNet:    "192.168.1.2",
+				SrcPorts:  "any",
+				DstPorts:  "any",
+				Direction: "->",
+				Contents: []rules.ContentMatch{
+					{Raw: []byte("arp")},
+				},
 			},
 			wantProto: "arp",
-			wantErr:   true,
+			wantErr:   false,
 		},
 	}
 

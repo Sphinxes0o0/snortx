@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/user/snortx/internal/engine"
@@ -23,13 +25,65 @@ type Handlers struct {
 }
 
 func NewHandlers(outputDir string) *Handlers {
-	return &Handlers{
+	h := &Handlers{
 		generator: packets.NewGenerator(),
 		jsonGen:   reports.NewJSONGenerator(outputDir),
 		htmlGen:   reports.NewHTMLGenerator(outputDir),
 		outputDir: outputDir,
 		testRuns:  make(map[string]*reports.TestRunResult),
 	}
+	// Load existing results from disk
+	h.loadResults()
+	return h
+}
+
+// persistPath returns the path to persist a test result
+func (h *Handlers) persistPath(testRunID string) string {
+	return filepath.Join(h.outputDir, "test_runs", testRunID+".json")
+}
+
+// saveResult persists a test result to disk
+func (h *Handlers) saveResult(result *reports.TestRunResult) error {
+	path := h.persistPath(result.TestRunID)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// loadResults loads all persisted test results from disk
+func (h *Handlers) loadResults() {
+	dir := filepath.Join(h.outputDir, "test_runs")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		testRunID := entry.Name()[:len(entry.Name())-5]
+		path := filepath.Join(dir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var result reports.TestRunResult
+		if err := json.Unmarshal(data, &result); err != nil {
+			continue
+		}
+		h.testRuns[testRunID] = &result
+	}
+}
+
+// deleteResult removes a persisted test result
+func (h *Handlers) deleteResult(testRunID string) error {
+	path := h.persistPath(testRunID)
+	return os.Remove(path)
 }
 
 func (h *Handlers) UploadRules(w http.ResponseWriter, r *http.Request) {
@@ -47,15 +101,15 @@ func (h *Handlers) UploadRules(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parser := rules.NewParser()
-	rulesList, err := parser.ParseMulti(string(content))
+	result, err := parser.ParseMulti(string(content))
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, "failed to parse rules", err.Error())
 		return
 	}
 
 	resp := ParseResponse{
-		Rules:  rulesList,
-		Count:  len(rulesList),
+		Rules:  result.Rules,
+		Count:  len(result.Rules),
 		Errors: []ParseError{},
 	}
 
@@ -70,15 +124,15 @@ func (h *Handlers) ParseRules(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parser := rules.NewParser()
-	rulesList, err := parser.ParseMulti(req.Rules)
+	result, err := parser.ParseMulti(req.Rules)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, "failed to parse rules", err.Error())
 		return
 	}
 
 	resp := ParseResponse{
-		Rules:  rulesList,
-		Count:  len(rulesList),
+		Rules:  result.Rules,
+		Count:  len(result.Rules),
 		Errors: []ParseError{},
 	}
 
@@ -94,14 +148,18 @@ func (h *Handlers) RunTests(w http.ResponseWriter, r *http.Request) {
 
 	// Parse rules from request body
 	parser := rules.NewParser()
-	rulesList, err := parser.ParseMulti(req.Rules)
+	parseResult, err := parser.ParseMulti(req.Rules)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, "failed to parse rules", err.Error())
 		return
 	}
 
 	// Create sender for this run
-	sender, err := packets.NewSender(h.outputDir, "lo0")
+	iface := req.Interface
+	if iface == "" {
+		iface = "lo0"
+	}
+	sender, err := packets.NewSender(h.outputDir, iface)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, "failed to create sender", err.Error())
 		return
@@ -110,7 +168,6 @@ func (h *Handlers) RunTests(w http.ResponseWriter, r *http.Request) {
 
 	// Create engine
 	eng, err := engine.New(engine.EngineConfig{
-		Parser:    parser,
 		Generator: h.generator,
 		Sender:    sender,
 		OutputDir: h.outputDir,
@@ -121,36 +178,61 @@ func (h *Handlers) RunTests(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Run tests
-	result, err := eng.Run(rulesList)
+	result, err := eng.Run(parseResult.Rules)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, "failed to run tests", err.Error())
 		return
 	}
 
-	// Store result
+	// Store result in memory and persist to disk
 	h.mu.Lock()
 	h.testRuns[result.TestRunID] = result
 	h.mu.Unlock()
 
-	// Generate reports
-	var jsonPath, htmlPath string
-	switch req.Format {
-	case "json":
-		jsonPath, _ = h.jsonGen.Generate(result)
-	case "html":
-		htmlPath, _ = h.htmlGen.Generate(result)
-	default:
-		jsonPath, _ = h.jsonGen.Generate(result)
-		htmlPath, _ = h.htmlGen.Generate(result)
+	// Persist to disk
+	if err := h.saveResult(result); err != nil {
+		// Log but don't fail - the result is already in memory
+		fmt.Printf("Warning: failed to persist result: %v\n", err)
 	}
 
+	// Generate reports
+	var jsonPath, htmlPath string
+	var reportErrs []string
+	switch req.Format {
+	case "json":
+		jsonPath, err = h.jsonGen.Generate(result)
+		if err != nil {
+			reportErrs = append(reportErrs, fmt.Sprintf("json report: %v", err))
+		}
+	case "html":
+		htmlPath, err = h.htmlGen.Generate(result)
+		if err != nil {
+			reportErrs = append(reportErrs, fmt.Sprintf("html report: %v", err))
+		}
+	default:
+		jsonPath, err = h.jsonGen.Generate(result)
+		if err != nil {
+			reportErrs = append(reportErrs, fmt.Sprintf("json report: %v", err))
+		}
+		htmlPath, err = h.htmlGen.Generate(result)
+		if err != nil {
+			reportErrs = append(reportErrs, fmt.Sprintf("html report: %v", err))
+		}
+	}
+
+	var msg string
+	if len(reportErrs) > 0 {
+		msg = fmt.Sprintf("JSON: %s, HTML: %s, Errors: %v", jsonPath, htmlPath, reportErrs)
+	} else {
+		msg = fmt.Sprintf("JSON: %s, HTML: %s", jsonPath, htmlPath)
+	}
 	resp := TestRunResponse{
 		TestRunID: result.TestRunID,
 		Status:    "completed",
 		Total:     result.TotalRules,
 		Success:   result.SuccessCount,
 		Failed:    result.FailureCount,
-		Message:   fmt.Sprintf("JSON: %s, HTML: %s", jsonPath, htmlPath),
+		Message:   msg,
 	}
 
 	h.writeJSON(w, http.StatusOK, resp)
@@ -163,6 +245,23 @@ func (h *Handlers) GetTestResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse pagination params
+	page := 1
+	pageSize := 50
+	if p := r.URL.Query().Get("page"); p != "" {
+		if pi, err := fmt.Sscanf(p, "%d", &page); err == nil && pi > 0 {
+			// page parsed
+		}
+	}
+	if ps := r.URL.Query().Get("page_size"); ps != "" {
+		if psi, err := fmt.Sscanf(ps, "%d", &pageSize); err == nil && psi > 0 {
+			pageSize = psi
+			if pageSize > 100 {
+				pageSize = 100 // cap at 100
+			}
+		}
+	}
+
 	h.mu.RLock()
 	result, exists := h.testRuns[testRunID]
 	h.mu.RUnlock()
@@ -172,7 +271,54 @@ func (h *Handlers) GetTestResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, result)
+	// If no pagination requested, return full result (backward compatible)
+	if page <= 0 && pageSize >= len(result.Results) {
+		h.writeJSON(w, http.StatusOK, result)
+		return
+	}
+
+	// Apply pagination
+	totalResults := len(result.Results)
+	totalPages := (totalResults + pageSize - 1) / pageSize
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages && totalPages > 0 {
+		page = totalPages
+	}
+
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if end > totalResults {
+		end = totalResults
+	}
+
+	items := make([]*TestResultItem, 0, end-start)
+	for i := start; i < end; i++ {
+		r := result.Results[i]
+		items = append(items, &TestResultItem{
+			RuleSID:     r.RuleSID,
+			RuleMsg:     r.RuleMsg,
+			Protocol:    r.Protocol,
+			PacketsGen:  r.PacketsGen,
+			PacketsSent: r.PacketsSent,
+			PCAPPath:    r.PCAPPath,
+			Status:      r.Status,
+			Error:       r.Error,
+			Duration:    r.Duration.String(),
+		})
+	}
+
+	resp := TestResultsResponse{
+		TestRunID:    result.TestRunID,
+		TotalResults: totalResults,
+		Page:         page,
+		PageSize:     pageSize,
+		TotalPages:   totalPages,
+		Results:      items,
+	}
+
+	h.writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handlers) HealthCheck(w http.ResponseWriter, r *http.Request) {

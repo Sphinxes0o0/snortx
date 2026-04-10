@@ -108,3 +108,188 @@ pass tcp any any -> any any (msg:"TEST pass action"; content:"test"; sid:1000029
 
 # Multiple options
 alert tcp any any -> any 80 (msg:"TEST complex rule"; content:"GET /"; nocase; pcre:"/GET /"; flow:to_server; sid:1000030; rev:1;)
+
+# === Additional Protocol Options ===
+
+# TCP with TCP flags
+alert tcp any any -> any any (msg:"TEST TCP flags"; content:"test"; tcp_flags:F,P,URG; sid:1000031; rev:1;)
+
+# TCP with ACK
+alert tcp any any -> any any (msg:"TEST TCP ack"; content:"test"; ack:12345; sid:1000032; rev:1;)
+
+# TCP with SEQ
+alert tcp any any -> any any (msg:"TEST TCP seq"; content:"test"; seq:54321; sid:1000033; rev:1;)
+
+# ICMP with type and code
+alert icmp any any -> any any (msg:"TEST ICMP type"; content:"test"; itype:8; sid:1000034; rev:1;)
+
+# ICMP with code
+alert icmp any any -> any any (msg:"TEST ICMP code"; content:"test"; icode:0; sid:1000035; rev:1;)
+
+# IP with TTL
+alert ip any any -> any any (msg:"TEST IP TTL"; content:"test"; ttl:64; sid:1000036; rev:1;)
+
+# IP with TOS
+alert ip any any -> any any (msg:"TEST IP TOS"; content:"test"; tos:0; sid:1000037; rev:1;)
+
+# IP with IP proto
+alert ip any any -> any any (msg:"TEST IP proto"; content:"test"; ip_proto:6; sid:1000038; rev:1;)
+
+# Same IP option
+alert tcp any any -> any any (msg:"TEST sameip"; content:"test"; sameip; sid:1000039; rev:1;)
+
+# DSCP option
+alert tcp any any -> any any (msg:"TEST DSCP"; content:"test"; dscp:AF41; sid:1000040; rev:1;)
+
+# VLAN option
+alert tcp any any -> any any (msg:"TEST VLAN"; content:"test"; vlan:100; sid:1000041; rev:1;)
+
+# IP ID option
+alert ip any any -> any any (msg:"TEST IP ID"; content:"test"; ip_id:1234; sid:1000042; rev:1;)
+
+# Content with offset and depth
+alert tcp any any -> any any (msg:"TEST content modifiers"; content:"test"; offset:5; depth:10; sid:1000043; rev:1;)
+
+# Content with distance and within
+alert tcp any any -> any any (msg:"TEST content distance"; content:"GET"; content:"test"; distance:0; within:50; sid:1000044; rev:1;)
+
+# Multiple contents with different modifiers
+alert tcp any any -> any 80 (msg:"TEST multiple contents"; content:"GET"; nocase; content:"/ HTTP"; depth:10; sid:1000045; rev:1;)
+
+# HTTP URI
+alert tcp any any -> any 80 (msg:"TEST HTTP URI"; content:"GET"; http_uri; sid:1000046; rev:1;)
+
+# HTTP Cookie
+alert tcp any any -> any 80 (msg:"TEST HTTP Cookie"; content:"test"; http_cookie; sid:1000047; rev:1;)
+
+# HTTP Header
+alert tcp any any -> any 80 (msg:"TEST HTTP Header"; content:"test"; http_header; sid:1000048; rev:1;)
+
+# HTTP Method
+alert tcp any any -> any 80 (msg:"TEST HTTP Method"; content:"POST"; http_method; sid:1000049; rev:1;)
+
+# HTTP User Agent
+alert tcp any any -> any 80 (msg:"TEST HTTP User Agent"; content:"test"; http_user_agent; sid:1000050; rev:1;)
+
+# HTTP Host
+alert tcp any any -> any 80 (msg:"TEST HTTP Host"; content:"test"; http_host; sid:1000051; rev:1;)
+
+# Flowbits set
+alert tcp any any -> any any (msg:"TEST flowbits set"; content:"test"; flowbits:set,testbit; sid:1000052; rev:1;)
+
+# Flowbits check
+alert tcp any any -> any any (msg:"TEST flowbits check"; content:"test"; flowbits:isset,testbit; sid:1000053; rev:1;)
+
+# Stream reassemble
+alert tcp any any -> any any (msg:"TEST stream reassemble"; content:"test"; stream_reassemble:both; sid:1000054; rev:1;)
+
+# Stream size
+alert tcp any any -> any any (msg:"TEST stream size"; content:"test"; stream_size:both,50,200; sid:1000055; rev:1;)
+
+# Detection filter
+alert tcp any any -> any any (msg:"TEST detection filter"; content:"test"; detection_filter:track by_src, count 5, seconds 60; sid:1000056; rev:1;)
+
+# Threshold
+alert tcp any any -> any any (msg:"TEST threshold"; content:"test"; threshold:type limit, track by_src, count 5, seconds 60; sid:1000057; rev:1;)
+
+# Rate filter
+alert tcp any any -> any any (msg:"TEST rate filter"; content:"test"; rate_filter:mode limit, track by_src, count 10, seconds 60, new_action drop; sid:1000058; rev:1;)
+
+# PCRE with modifiers
+alert tcp any any -> any 80 (msg:"TEST PCRE modifiers"; content:"GET"; pcre:"/GET/i"; sid:1000059; rev:1;)
+
+# PCRE with multiline
+alert tcp any any -> any any (msg:"TEST PCRE multiline"; content:"test"; pcre:"/test/m"; sid:1000060; rev:1;)
+
+# Byte test
+alert tcp any any -> any any (msg:"TEST byte_test"; content:"test"; byte_test:2,=,256,0; sid:1000061; rev:1;)
+
+# Byte jump
+alert tcp any any -> any any (msg:"TEST byte_jump"; content:"test"; byte_jump:2,0; sid:1000062; rev:1;)
+
+# Dsize option
+alert tcp any any -> any any (msg:"TEST dsize"; content:"test"; dsize:100<>500; sid:1000063; rev:1;)
+
+# Byte extract
+alert tcp any any -> any any (msg:"TEST byte_extract"; content:"test"; byte_extract:2,0,test_var; sid:1000064; rev:1;)
+
+# byte_math
+alert tcp any any -> any any (msg:"TEST byte_math"; content:"test"; byte_math:oper +, offset 0, rvalue 10, result var; sid:1000065; rev:1;)
+
+# isdataat
+alert tcp any any -> any any (msg:"TEST isdataat"; content:"test"; isdataat:100,relative; sid:1000066; rev:1;)
+
+# rawbytes
+alert tcp any any -> any any (msg:"TEST rawbytes"; content:"test"; rawbytes; sid:1000067; rev:1;)
+
+# fast_pattern
+alert tcp any any -> any any (msg:"TEST fast_pattern"; content:"test"; fast_pattern; sid:1000068; rev:1;)
+
+# Base64 decode
+alert tcp any any -> any any (msg:"TEST base64_decode"; content:"test"; base64_decode; sid:1000069; rev:1;)
+
+# Base64 data with bytes
+alert tcp any any -> any any (msg:"TEST base64_data"; content:"test"; base64_decode bytes 256; sid:1000070; rev:1;)
+
+# urilen
+alert tcp any any -> any 80 (msg:"TEST urilen"; content:"GET"; http_uri; urilen:10,20; sid:1000071; rev:1;)
+
+# file_data
+alert tcp any any -> any any (msg:"TEST file_data"; file_data; sid:1000072; rev:1;)
+
+# pkt_data
+alert tcp any any -> any any (msg:"TEST pkt_data"; pkt_data; sid:1000073; rev:1;)
+
+# noalert
+alert tcp any any -> any any (msg:"TEST noalert"; content:"test"; noalert; sid:1000074; rev:1;)
+
+# Tag option
+alert tcp any any -> any any (msg:"TEST tag"; content:"test"; tag:session,300,seconds; sid:1000075; rev:1;)
+
+# Activates option
+alert tcp any any -> any any (msg:"TEST activates"; content:"test"; activates:1; sid:1000076; rev:1;)
+
+# activated_by option
+alert tcp any any -> any any (msg:"TEST activated_by"; content:"test"; activated_by:1; count:5; sid:1000077; rev:1;)
+
+# Replace option
+alert tcp any any -> any any (msg:"TEST replace"; content:"test"; replace:"best"; sid:1000078; rev:1;)
+
+# service option
+alert tcp any any -> any any (msg:"TEST service"; content:"test"; service:http; sid:1000079; rev:1;)
+
+# appid option
+alert tcp any any -> any any (msg:"TEST appid"; content:"test"; appid:facebook; sid:1000080; rev:1;)
+
+# gid option
+alert tcp any any -> any any (msg:"TEST gid"; content:"test"; gid:1; sid:1000081; rev:1;)
+
+# metadata option
+alert tcp any any -> any any (msg:"TEST metadata"; content:"test"; metadata:policy balanced-ips drop; sid:1000082; rev:1;)
+
+# classtype option
+alert tcp any any -> any any (msg:"TEST classtype"; content:"test"; classtype:attempted-admin; sid:1000083; rev:1;)
+
+# reference option
+alert tcp any any -> any any (msg:"TEST reference"; content:"test"; reference:url,www.example.com; sid:1000084; rev:1;)
+
+# priority option
+alert tcp any any -> any any (msg:"TEST priority"; content:"test"; priority:1; sid:1000085; rev:1;)
+
+# config option
+alert tcp any any -> any any (msg:"TEST config"; content:"test"; config:max_pattern_len 8192; sid:1000086; rev:1;)
+
+# soid option
+alert tcp any any -> any any (msg:"TEST soid"; content:"test"; soid:3:12345; sid:1000087; rev:1;)
+
+# lua script option
+alert tcp any any -> any any (msg:"TEST lua"; content:"test"; lua:true; sid:1000088; rev:1;)
+
+# xbits option
+alert tcp any any -> any any (msg:"TEST xbits"; content:"test"; xbits:set,testbit; sid:1000089; rev:1;)
+
+# fragoffset option
+alert ip any any -> any any (msg:"TEST fragoffset"; content:"test"; fragoffset:0; sid:1000090; rev:1;)
+
+# fragbits option
+alert ip any any -> any any (msg:"TEST fragbits"; content:"test"; fragbits:D; sid:1000091; rev:1;)
