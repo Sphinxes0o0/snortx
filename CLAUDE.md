@@ -15,8 +15,11 @@ go build -o snortx ./cmd/cli
 # Build API server
 go build -o snortx-api ./cmd/api
 
-# Run tests
+# Run all tests
 go test ./...
+
+# Run a single test
+go test ./internal/rules -run TestParseContentMatch -v
 
 # Tidy dependencies
 go mod tidy
@@ -71,6 +74,12 @@ internal/api         → HTTP server, handlers, router (gorilla/mux)
 pkg/config           → Configuration structs and YAML loading
 ```
 
+**Data flow**: Parser → Engine (worker pool with N goroutines) → Generator (creates packets) → Sender (writes PCAP)
+
+**Engine design**: Uses sync.WaitGroup for worker coordination, sync.Mutex for thread-safe result aggregation, and buffered channels (`ruleChan`, `resultChan`) sized at `workerCount*2`. PCRE patterns are cached in a map keyed by pattern string.
+
+**Protocol mapping**: Application-layer protocol specifiers (http, https, ftp, ssh, smtp, dns, etc.) are transparently mapped to TCP transport in `parseHeader()`.
+
 ## Key Interfaces
 
 - `rules.Parser`: Parses Snort rules → `*ParsedRule`
@@ -80,8 +89,7 @@ pkg/config           → Configuration structs and YAML loading
 
 ## Supported Protocols
 
-- TCP, UDP, ICMP, IP (IPv4/IPv6), SCTP
-- Application protocols mapped to TCP: HTTP, HTTPS, FTP, SSH, SMTP, DNS, etc.
+TCP, UDP, ICMP, IP (IPv4/IPv6), SCTP, DNS, ARP. Application-layer specifiers (http, https, ftp, ssh, smtp, dns, etc.) are normalized to TCP.
 
 ## Configuration
 
@@ -106,5 +114,5 @@ snortx uses YAML configuration files. See `examples/snortx.yaml` for the full sc
 - Uses gopacket for packet construction; requires `SerializeLayers` with all layers at once (Ethernet + IP + L4 + Payload) to produce valid packets
 - PCAP writer uses pcapgo; CaptureInfo must have correct CaptureLength/Length set
 - Worker pool uses buffered channels for rule input and results aggregation
-- PCRE patterns are validated against generated payloads using Go's regexp
+- PCRE patterns are validated against generated payloads in the Engine (not during parsing) using Go's regexp with an in-memory cache keyed by pattern
 - Config can be loaded via `--config` flag or defaults are used
