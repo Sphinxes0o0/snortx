@@ -9,44 +9,25 @@ snortx is a Go-based tool that parses Snort rules, generates matching network pa
 ## Build Commands
 
 ```bash
-# Build CLI
 go build -o snortx ./cmd/cli
-
-# Build API server
 go build -o snortx-api ./cmd/api
-
-# Run all tests
-go test ./...
-
-# Run a single test
-go test ./internal/rules -run TestParseContentMatch -v
-
-# Tidy dependencies
+go test ./...                      # Run all tests
+go test ./internal/rules -v        # Run tests for a specific package
+go test -run TestParser ./...      # Run tests matching a pattern
 go mod tidy
 ```
 
 ## Running
 
 ```bash
-# Show version
 ./snortx version
-
-# Parse rules
 ./snortx parse examples/sample.rules
-
-# Generate packets (without sending)
 ./snortx generate examples/sample.rules
-
-# Lint rules (validate without generating)
 ./snortx lint examples/sample.rules
-
-# Run full test pipeline
 ./snortx test examples/sample.rules -o /tmp/output
-
-# Batch test multiple files
 ./snortx batch rules1.rules rules2.rules
-
-# Start API server
+./snortx benchmark rules.rules --iterations 1000
+./snortx diff rules1.rules rules2.rules
 ./snortx-api serve --addr :8080
 ```
 
@@ -59,18 +40,48 @@ go mod tidy
 | `lint <file>` | Validate rules without generating packets |
 | `test <file>` | Run full test pipeline |
 | `batch <files...>` | Run tests on multiple rule files |
+| `benchmark <file>` | Performance benchmark on rule file |
+| `diff <file1> <file2>` | Compare two rule files |
+| `repl` | Interactive REPL for rule testing |
 | `serve` | Start the REST API server |
 | `version` | Show version information |
+
+## Key Flags
+
+```bash
+# Test command
+./snortx test rules.rules -o ./output        # Output directory (default: ./output)
+./snortx test rules.rules -w 4               # Worker count (default: auto/NumCPU)
+./snortx test rules.rules -r json            # Report format: json, html, both (default: both)
+./snortx test rules.rules -i eth0            # Network interface (default: lo0)
+./snortx test rules.rules --mode pcap        # Send mode: pcap, inject, both
+
+# Parse command
+./snortx parse rules.rules --json            # Output rules as JSON
+
+# Batch command
+./snortx batch rules1.rules rules2.rules -w 4  # Parallel workers (default: 4)
+
+# Benchmark command
+./snortx benchmark rules.rules -n 1000       # Iterations (default: 1000)
+./snortx benchmark rules.rules --warmup      # Run warmup before benchmark
+
+# Serve command
+./snortx-api serve --addr :8080             # Listen address
+./snortx-api serve --auth-token TOKEN       # Bearer token authentication
+./snortx-api serve --cors "*,example.com"    # CORS origins
+./snortx-api serve --rate-limit 100         # Requests per second (default: 100)
+```
 
 ## Architecture
 
 ```
-cmd/cli, cmd/api     → Entry points
-internal/rules       → Snort rule parsing (Parser, models)
+cmd/cli, cmd/api     → Entry points (cobra CLI, gorilla/mux HTTP)
+internal/rules       → Snort rule parsing (Parser), models (ParsedRule, ContentMatch, PCREMatch)
 internal/packets     → Packet generation (Generator) and PCAP writing (Sender)
-internal/engine      → Worker pool for parallel rule processing
+internal/engine      → Worker pool: buffered channels for rules/results, PCRE regex caching
 internal/reports     → JSON and HTML report generation
-internal/api         → HTTP server, handlers, router (gorilla/mux)
+internal/api         → HTTP server with auth, CORS, rate limiting
 pkg/config           → Configuration structs and YAML loading
 ```
 
@@ -85,18 +96,23 @@ pkg/config           → Configuration structs and YAML loading
 - `rules.Parser`: Parses Snort rules → `*ParsedRule`
 - `packets.Generator`: Generates `gopacket.Packet` from `*ParsedRule`
 - `packets.Sender`: Writes packets to PCAP files
-- `engine.Engine`: Worker pool that processes rules in parallel via channels
+- `engine.Engine`: Worker pool (NumCPU workers by default) with buffered channels
 
 ## Supported Protocols
 
-TCP, UDP, ICMP, IP (IPv4/IPv6), SCTP, DNS, ARP. Application-layer specifiers (http, https, ftp, ssh, smtp, dns, etc.) are normalized to TCP.
+TCP, UDP, ICMP, IP (IPv4/IPv6), SCTP, ARP, DNS
+Application protocols mapped to TCP: HTTP, HTTPS, FTP, SSH, SMTP, DNS, SIP, SMB, etc.
 
 ## Configuration
 
-snortx uses YAML configuration files. See `examples/snortx.yaml` for the full schema.
+YAML config via `--config` flag. See `examples/snortx.yaml` for schema.
 
-```bash
-./snortx --config examples/snortx.yaml test rules.rules
+```yaml
+generator:
+  vars:
+    $HOME_NET: "192.168.1.0/24"    # Customize variable expansion
+    $EXTERNAL_NET: "any"
+    $HTTP_SERVERS: "$HOME_NET"
 ```
 
 ## API Endpoints
@@ -109,10 +125,10 @@ snortx uses YAML configuration files. See `examples/snortx.yaml` for the full sc
 | GET | `/api/v1/tests/results?id=<id>` | Get test results |
 | GET | `/api/v1/health` | Health check |
 
-## Notes
+## Implementation Notes
 
-- Uses gopacket for packet construction; requires `SerializeLayers` with all layers at once (Ethernet + IP + L4 + Payload) to produce valid packets
-- PCAP writer uses pcapgo; CaptureInfo must have correct CaptureLength/Length set
-- Worker pool uses buffered channels for rule input and results aggregation
-- PCRE patterns are validated against generated payloads in the Engine (not during parsing) using Go's regexp with an in-memory cache keyed by pattern
-- Config can be loaded via `--config` flag or defaults are used
+- **Packet construction**: Uses gopacket with `SerializeLayers` (Ethernet + IP + L4 + Payload)
+- **PCAP writing**: Uses pcapgo; CaptureInfo requires correct CaptureLength/Length
+- **Worker pool**: Buffered channels (capacity = WorkerCount*2), wait groups for coordination
+- **PCRE validation**: Compiles to Go regex, cached by pattern; payload validated for `/pattern/modifiers` match
+- **Variable expansion**: Generator expands `$HOME_NET`, `$EXTERNAL_NET`, etc. from configured vars map

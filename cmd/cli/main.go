@@ -17,6 +17,7 @@ import (
 	"github.com/user/snortx/internal/packets"
 	"github.com/user/snortx/internal/reports"
 	"github.com/user/snortx/internal/rules"
+	"github.com/user/snortx/pkg/config"
 )
 
 var (
@@ -187,6 +188,7 @@ func parseRules(cmd *cobra.Command, args []string) error {
 
 func runTests(cmd *cobra.Command, args []string) error {
 	ruleFile := args[0]
+	cfg := loadConfig()
 
 	fmt.Printf("Loading rules from: %s\n", ruleFile)
 
@@ -212,7 +214,7 @@ func runTests(cmd *cobra.Command, args []string) error {
 	}
 	defer sender.Close()
 
-	generator := packets.NewGenerator()
+	generator := packets.NewGeneratorWithVars(cfg.Engine.Generator.Vars)
 
 	eng, err := engine.New(engine.EngineConfig{
 		Generator:   generator,
@@ -306,6 +308,18 @@ func splitAndTrim(s, sep string) []string {
 	return result
 }
 
+func loadConfig() *config.Config {
+	if configFile == "" {
+		return config.LoadDefault()
+	}
+	cfg, err := config.Load(configFile)
+	if err != nil {
+		fmt.Printf("Warning: failed to load config from %s: %v, using defaults\n", configFile, err)
+		return config.LoadDefault()
+	}
+	return cfg
+}
+
 func showVersion(cmd *cobra.Command, args []string) error {
 	fmt.Printf("snortx version %s\n", version)
 	fmt.Printf("Go version: %s\n", runtime.Version())
@@ -315,6 +329,7 @@ func showVersion(cmd *cobra.Command, args []string) error {
 
 func generatePackets(cmd *cobra.Command, args []string) error {
 	ruleFile := args[0]
+	cfg := loadConfig()
 
 	parser := rules.NewParser()
 	result, err := parser.ParseFile(ruleFile)
@@ -322,7 +337,7 @@ func generatePackets(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to parse rules: %w", err)
 	}
 
-	generator := packets.NewGenerator()
+	generator := packets.NewGeneratorWithVars(cfg.Engine.Generator.Vars)
 
 	fmt.Printf("Generating packets for %d rules...\n", len(result.Rules))
 	generated := 0
@@ -342,6 +357,7 @@ func generatePackets(cmd *cobra.Command, args []string) error {
 
 func lintRules(cmd *cobra.Command, args []string) error {
 	ruleFile := args[0]
+	cfg := loadConfig()
 
 	parser := rules.NewParser()
 	result, err := parser.ParseFile(ruleFile)
@@ -349,7 +365,7 @@ func lintRules(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to parse rules: %w", err)
 	}
 
-	generator := packets.NewGenerator()
+	generator := packets.NewGeneratorWithVars(cfg.Engine.Generator.Vars)
 
 	fmt.Printf("Validating %d rules from %s...\n\n", len(result.Rules), ruleFile)
 
@@ -444,8 +460,9 @@ func contains(s string, c rune) bool {
 }
 
 func batchTest(cmd *cobra.Command, args []string) error {
+	cfg := loadConfig()
 	parser := rules.NewParser()
-	generator := packets.NewGenerator()
+	generator := packets.NewGeneratorWithVars(cfg.Engine.Generator.Vars)
 
 	totalRules := 0
 	totalSuccess := 0
@@ -532,6 +549,7 @@ func init() {
 
 func runBenchmark(cmd *cobra.Command, args []string) error {
 	ruleFile := args[0]
+	cfg := loadConfig()
 
 	parser := rules.NewParser()
 	result, err := parser.ParseFile(ruleFile)
@@ -539,7 +557,7 @@ func runBenchmark(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to parse rules: %w", err)
 	}
 
-	generator := packets.NewGenerator()
+	generator := packets.NewGeneratorWithVars(cfg.Engine.Generator.Vars)
 
 	fmt.Printf("Benchmarking: %s\n", ruleFile)
 	fmt.Printf("Rules: %d\n", len(result.Rules))
@@ -740,8 +758,9 @@ func compareRules(r1, r2 *rules.ParsedRule) []string {
 }
 
 func runRepl(cmd *cobra.Command, args []string) error {
+	cfg := loadConfig()
 	parser := rules.NewParser()
-	generator := packets.NewGenerator()
+	generator := packets.NewGeneratorWithVars(cfg.Engine.Generator.Vars)
 
 	fmt.Println("snortx REPL - Interactive Rule Testing")
 	fmt.Println("=====================================")

@@ -13,6 +13,13 @@ engine:
     default_dst_ip: "10.0.0.1"
     default_src_port: 12345
     default_dst_port: 80
+    vars:
+      $HOME_NET: "10.0.0.0/24"
+      $EXTERNAL_NET: "any"
+      $HTTP_SERVERS: "any"
+      $SMTP_SERVERS: "any"
+      $DNS_SERVERS: "any"
+      $SSH_SERVERS: "any"
   sender:
     interface: "lo0"
     snap_len: 65536

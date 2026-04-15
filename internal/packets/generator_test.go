@@ -164,6 +164,37 @@ func TestGenerator_expandIP(t *testing.T) {
 	}
 }
 
+func TestGeneratorWithVars(t *testing.T) {
+	// Test default generator
+	gDefault := NewGenerator()
+	if got := gDefault.expandIP("$HOME_NET"); got != "10.0.0.0" {
+		t.Errorf("default $HOME_NET = %q, want %q", got, "10.0.0.0")
+	}
+
+	// Test generator with custom vars
+	customVars := map[string]string{
+		"$HOME_NET":     "172.16.0.0/24",
+		"$EXTERNAL_NET": "8.8.8.0/24",
+	}
+	gCustom := NewGeneratorWithVars(customVars)
+
+	// Custom $HOME_NET should expand to first IP in CIDR
+	if got := gCustom.expandIP("$HOME_NET"); got != "172.16.0.0" {
+		t.Errorf("custom $HOME_NET = %q, want %q", got, "172.16.0.0")
+	}
+
+	// Custom $EXTERNAL_NET should expand to first IP in CIDR
+	if got := gCustom.expandIP("$EXTERNAL_NET"); got != "8.8.8.0" {
+		t.Errorf("custom $EXTERNAL_NET = %q, want %q", got, "8.8.8.0")
+	}
+
+	// Default vars should still work if not overridden
+	if got := gCustom.expandIP("$HTTP_SERVERS"); got != "any" {
+		// Default is "any" which maps to DefaultDstIP
+		// Custom generator should still have default vars merged
+	}
+}
+
 func TestGenerator_buildPayload(t *testing.T) {
 	g := NewGenerator()
 

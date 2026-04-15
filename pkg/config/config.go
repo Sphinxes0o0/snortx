@@ -30,10 +30,11 @@ type EngineConfig struct {
 }
 
 type GeneratorConfig struct {
-	DefaultSrcIP   string `yaml:"default_src_ip"`
-	DefaultDstIP   string `yaml:"default_dst_ip"`
-	DefaultSrcPort uint16 `yaml:"default_src_port"`
-	DefaultDstPort uint16 `yaml:"default_dst_port"`
+	DefaultSrcIP   string            `yaml:"default_src_ip"`
+	DefaultDstIP   string            `yaml:"default_dst_ip"`
+	DefaultSrcPort uint16            `yaml:"default_src_port"`
+	DefaultDstPort uint16            `yaml:"default_dst_port"`
+	Vars           map[string]string `yaml:"vars"`
 }
 
 type SenderConfig struct {
@@ -94,6 +95,14 @@ func LoadDefault() *Config {
 				DefaultDstIP:   "10.0.0.1",
 				DefaultSrcPort: 12345,
 				DefaultDstPort: 80,
+				Vars: map[string]string{
+					"$HOME_NET":     "10.0.0.0/24",
+					"$EXTERNAL_NET": "any",
+					"$HTTP_SERVERS": "any",
+					"$SMTP_SERVERS": "any",
+					"$DNS_SERVERS":  "any",
+					"$SSH_SERVERS":  "any",
+				},
 			},
 			Sender: SenderConfig{
 				Interface: "lo0",

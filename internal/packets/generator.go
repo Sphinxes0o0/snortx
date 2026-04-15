@@ -25,21 +25,35 @@ type Generator struct {
 }
 
 func NewGenerator() *Generator {
+	return NewGeneratorWithVars(nil)
+}
+
+func NewGeneratorWithVars(vars map[string]string) *Generator {
+	// Default vars
+	defaultVars := map[string]string{
+		"$HOME_NET":     "10.0.0.0/24",
+		"$EXTERNAL_NET": "any",
+		"$HTTP_SERVERS": "any",
+		"$SMTP_SERVERS": "any",
+		"$DNS_SERVERS":  "any",
+		"$SSH_SERVERS":  "any",
+	}
+
+	// Merge with provided vars (provided vars override defaults)
+	if vars != nil {
+		for k, v := range vars {
+			defaultVars[k] = v
+		}
+	}
+
 	return &Generator{
 		DefaultSrcIP:   "192.168.1.100",
 		DefaultDstIP:   "10.0.0.1",
 		DefaultSrcPort: 12345,
 		DefaultDstPort: 80,
-		Vars: map[string]string{
-			"$HOME_NET":     "10.0.0.0/24",
-			"$EXTERNAL_NET": "any",
-			"$HTTP_SERVERS": "any",
-			"$SMTP_SERVERS": "any",
-			"$DNS_SERVERS":  "any",
-			"$SSH_SERVERS":  "any",
-		},
-		RandomMAC: false,
-		RandomSeq: false,
+		Vars:           defaultVars,
+		RandomMAC:      false,
+		RandomSeq:      false,
 	}
 }
 

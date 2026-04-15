@@ -22,6 +22,9 @@ engine:
     default_dst_ip: 192.168.1.1
     default_src_port: 54321
     default_dst_port: 443
+    vars:
+      $HOME_NET: "10.10.10.0/24"
+      $EXTERNAL_NET: "192.168.1.0/24"
   sender:
     interface: eth0
     snap_len: 8192
@@ -63,6 +66,15 @@ cli:
 	}
 	if cfg.Engine.Generator.DefaultSrcPort != 54321 {
 		t.Errorf("expected Engine.Generator.DefaultSrcPort 54321, got %d", cfg.Engine.Generator.DefaultSrcPort)
+	}
+	if cfg.Engine.Generator.Vars == nil {
+		t.Error("expected Engine.Generator.Vars to be non-nil")
+	}
+	if cfg.Engine.Generator.Vars["$HOME_NET"] != "10.10.10.0/24" {
+		t.Errorf("expected $HOME_NET '10.10.10.0/24', got %q", cfg.Engine.Generator.Vars["$HOME_NET"])
+	}
+	if cfg.Engine.Generator.Vars["$EXTERNAL_NET"] != "192.168.1.0/24" {
+		t.Errorf("expected $EXTERNAL_NET '192.168.1.0/24', got %q", cfg.Engine.Generator.Vars["$EXTERNAL_NET"])
 	}
 	if cfg.API.TLSEnabled != true {
 		t.Error("expected API.TLSEnabled true")
@@ -121,5 +133,14 @@ func TestLoadDefault(t *testing.T) {
 	}
 	if cfg.Engine.Sender.Interface != "lo0" {
 		t.Errorf("expected Engine.Sender.Interface 'lo0', got %q", cfg.Engine.Sender.Interface)
+	}
+	if cfg.Engine.Generator.Vars == nil {
+		t.Error("expected Engine.Generator.Vars to be non-nil in default config")
+	}
+	if cfg.Engine.Generator.Vars["$HOME_NET"] != "10.0.0.0/24" {
+		t.Errorf("expected default $HOME_NET '10.0.0.0/24', got %q", cfg.Engine.Generator.Vars["$HOME_NET"])
+	}
+	if cfg.Engine.Generator.Vars["$EXTERNAL_NET"] != "any" {
+		t.Errorf("expected default $EXTERNAL_NET 'any', got %q", cfg.Engine.Generator.Vars["$EXTERNAL_NET"])
 	}
 }
