@@ -13,6 +13,18 @@ import (
 	"github.com/user/snortx/internal/rules"
 )
 
+const (
+	// maxPCRECacheSize is the maximum number of PCRE patterns to cache
+	maxPCRECacheSize = 1000
+	// pcreCacheCleanupThreshold is when to trigger cleanup (number of entries)
+	pcreCacheCleanupThreshold = 1200
+)
+
+type cachedRegex struct {
+	regex      *regexp.Regexp
+	lastAccess time.Time
+}
+
 type Engine struct {
 	generator *packets.Generator
 	sender    *packets.Sender
@@ -25,7 +37,10 @@ type Engine struct {
 	mu sync.Mutex
 
 	testRunResult *reports.TestRunResult
-	pcreCache     map[string]*regexp.Regexp
+	pcreCache     map[string]*cachedRegex
+
+	// flowbitState tracks flowbit states for stateful rule processing
+	flowbitState map[string]bool
 }
 
 type EngineConfig struct {
@@ -48,7 +63,7 @@ func New(cfg EngineConfig) (*Engine, error) {
 		ruleChan:      make(chan *rules.ParsedRule, workerCount*2),
 		resultChan:    make(chan *packets.SendResult, workerCount*2),
 		testRunResult: reports.NewTestRunResult(),
-		pcreCache:     make(map[string]*regexp.Regexp),
+		pcreCache:     make(map[string]*cachedRegex),
 	}
 
 	e.testRunResult.TestRunID = fmt.Sprintf("run_%d", time.Now().Unix())
@@ -63,6 +78,9 @@ func (e *Engine) Run(parsedRules []*rules.ParsedRule) (*reports.TestRunResult, e
 	e.testRunResult = reports.NewTestRunResult()
 	e.testRunResult.TestRunID = fmt.Sprintf("run_%d", time.Now().Unix())
 	e.testRunResult.StartedAt = time.Now()
+
+	// Reset flowbit state for this run
+	e.flowbitState = make(map[string]bool)
 
 	for i := 0; i < e.WorkerCount; i++ {
 		e.wg.Add(1)
@@ -114,6 +132,18 @@ func (e *Engine) worker(id int) {
 func (e *Engine) processRule(rule *rules.ParsedRule) {
 	start := time.Now()
 
+	// Check flowbit conditions before processing
+	if !e.checkFlowbits(rule) {
+		e.resultChan <- &packets.SendResult{
+			RuleSID:  rule.RuleID.SID,
+			RuleMsg:  rule.Msg,
+			Protocol: rule.Protocol,
+			Status:   "failed",
+			Error:    "flowbit condition not met",
+		}
+		return
+	}
+
 	pkts, err := e.generator.Generate(rule)
 	if err != nil {
 		e.resultChan <- &packets.SendResult{
@@ -147,7 +177,45 @@ func (e *Engine) processRule(rule *rules.ParsedRule) {
 	result.PacketsGen = len(pkts)
 	result.Duration = time.Since(start)
 
+	// Set flowbits after successful match
+	e.setFlowbits(rule)
+
 	e.resultChan <- &result
+}
+
+// checkFlowbits checks if flowbit conditions are met for a rule
+func (e *Engine) checkFlowbits(rule *rules.ParsedRule) bool {
+	if len(rule.Flowbits) == 0 {
+		return true
+	}
+
+	for _, fb := range rule.Flowbits {
+		switch fb.Op {
+		case rules.FlowbitIsSet:
+			if !e.flowbitState[fb.Name] {
+				return false
+			}
+		case rules.FlowbitNotSet:
+			if e.flowbitState[fb.Name] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// setFlowbits sets flowbit states after a successful rule match
+func (e *Engine) setFlowbits(rule *rules.ParsedRule) {
+	for _, fb := range rule.Flowbits {
+		switch fb.Op {
+		case rules.FlowbitSet:
+			e.flowbitState[fb.Name] = true
+		case rules.FlowbitToggle:
+			e.flowbitState[fb.Name] = !e.flowbitState[fb.Name]
+		case rules.FlowbitUnset:
+			e.flowbitState[fb.Name] = false
+		}
+	}
 }
 
 func (e *Engine) validatePCRE(pcreMatches []rules.PCREMatch, payload []byte) error {
@@ -171,15 +239,34 @@ func (e *Engine) validatePCRE(pcreMatches []rules.PCREMatch, payload []byte) err
 
 		// Check cache first
 		cacheKey := pattern
-		re, found := e.pcreCache[cacheKey]
-		if !found {
-			var err error
-			re, err = regexp.Compile(pattern)
-			if err != nil {
-				return fmt.Errorf("invalid PCRE pattern: %v", err)
+		e.mu.Lock()
+		cached, found := e.pcreCache[cacheKey]
+		if found {
+			cached.lastAccess = time.Now()
+			e.mu.Unlock()
+			if !cached.regex.Match(payload) {
+				return fmt.Errorf("payload does not match PCRE /%s/%s", pcre.Pattern, pcre.Modifiers)
 			}
-			e.pcreCache[cacheKey] = re
+			continue
 		}
+
+		// Compile and cache
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			e.mu.Unlock()
+			return fmt.Errorf("invalid PCRE pattern: %v", err)
+		}
+
+		e.pcreCache[cacheKey] = &cachedRegex{
+			regex:      re,
+			lastAccess: time.Now(),
+		}
+
+		// Evict if cache is too large
+		if len(e.pcreCache) >= pcreCacheCleanupThreshold {
+			e.evictPCRECache()
+		}
+		e.mu.Unlock()
 
 		if !re.Match(payload) {
 			return fmt.Errorf("payload does not match PCRE /%s/%s", pcre.Pattern, pcre.Modifiers)
@@ -189,7 +276,49 @@ func (e *Engine) validatePCRE(pcreMatches []rules.PCREMatch, payload []byte) err
 	return nil
 }
 
+// evictPCRECache removes oldest entries when cache exceeds maxPCRECacheSize
+func (e *Engine) evictPCRECache() {
+	// If cache is under limit, nothing to do
+	if len(e.pcreCache) <= maxPCRECacheSize {
+		return
+	}
+
+	// Find and remove oldest entries to get back to maxPCRECacheSize
+	targetSize := maxPCRECacheSize / 2 // Remove half to avoid frequent eviction
+	toRemove := len(e.pcreCache) - targetSize
+
+	if toRemove <= 0 {
+		return
+	}
+
+	// Find oldest entries
+	type entry struct {
+		key   string
+		time  time.Time
+	}
+	var entries []entry
+	for k, v := range e.pcreCache {
+		entries = append(entries, entry{key: k, time: v.lastAccess})
+	}
+
+	// Sort by access time (oldest first)
+	for i := 0; i < len(entries)-1; i++ {
+		for j := i + 1; j < len(entries); j++ {
+			if entries[j].time.Before(entries[i].time) {
+				entries[i], entries[j] = entries[j], entries[i]
+			}
+		}
+	}
+
+	// Remove oldest entries
+	for i := 0; i < toRemove && i < len(entries); i++ {
+		delete(e.pcreCache, entries[i].key)
+	}
+}
+
 func (e *Engine) Stop() {
-	close(e.ruleChan)
+	// Note: ruleChan is closed by the sender goroutine in Run(),
+	// so we only wait for workers to finish. This is safe to call
+	// even after Run() completes.
 	e.wg.Wait()
 }

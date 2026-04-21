@@ -22,8 +22,9 @@ type rateLimitEntry struct {
 }
 
 var (
-	rateLimitMap = make(map[string]*rateLimitEntry)
-	rateLimitMu  sync.Mutex
+	rateLimitMap  = make(map[string]*rateLimitEntry)
+	rateLimitMu   sync.Mutex
+	rateLimitKeys []string // tracked for cleanup
 )
 
 func NewRouter(h *Handlers, auth AuthConfig, cors []string, rateLimit int) *mux.Router {
@@ -54,6 +55,8 @@ func NewRouter(h *Handlers, auth AuthConfig, cors []string, rateLimit int) *mux.
 	r.HandleFunc("/api/v1/rules/parse", h.ParseRules).Methods("POST")
 	r.HandleFunc("/api/v1/tests/run", h.RunTests).Methods("POST")
 	r.HandleFunc("/api/v1/tests/results", h.GetTestResults).Methods("GET")
+	r.HandleFunc("/api/v1/tests/results", h.DeleteTestResult).Methods("DELETE")
+	r.HandleFunc("/api/v1/tests/delete", h.BatchDeleteTestResults).Methods("POST")
 	r.HandleFunc("/api/v1/health", h.HealthCheck).Methods("GET")
 
 	return r
@@ -61,9 +64,7 @@ func NewRouter(h *Handlers, auth AuthConfig, cors []string, rateLimit int) *mux.
 
 func (m *middlewares) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
 		next.ServeHTTP(w, r)
-		_ = time.Since(start)
 	})
 }
 
@@ -138,6 +139,20 @@ func (m *middlewares) rateLimitMiddleware(next http.Handler) http.Handler {
 		defer rateLimitMu.Unlock()
 
 		now := time.Now()
+
+		// Clean up expired entries periodically
+		if len(rateLimitKeys) > 1000 {
+			newKeys := make([]string, 0, len(rateLimitKeys))
+			for _, k := range rateLimitKeys {
+				if entry, ok := rateLimitMap[k]; ok && now.Sub(entry.lastReset) <= time.Second {
+					newKeys = append(newKeys, k)
+				} else {
+					delete(rateLimitMap, k)
+				}
+			}
+			rateLimitKeys = newKeys
+		}
+
 		entry, exists := rateLimitMap[ip]
 
 		if !exists || now.Sub(entry.lastReset) > time.Second {
@@ -145,6 +160,7 @@ func (m *middlewares) rateLimitMiddleware(next http.Handler) http.Handler {
 				count:     1,
 				lastReset: now,
 			}
+			rateLimitKeys = append(rateLimitKeys, ip)
 			next.ServeHTTP(w, r)
 			return
 		}

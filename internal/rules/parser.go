@@ -146,6 +146,9 @@ func (p *Parser) ParseRule(text string) (*ParsedRule, error) {
 		}
 	}
 
+	// Extract IPv6 extension headers from options
+	ipv6ExtHeaders := extractIPv6ExtHeaders(options)
+
 	return &ParsedRule{
 		RawText:         origText,
 		Action:          action,
@@ -167,6 +170,7 @@ func (p *Parser) ParseRule(text string) (*ParsedRule, error) {
 		NoAlert:         noAlert,
 		Options:         options,
 		VLANID:          vlanID,
+		IPv6ExtHeaders:  ipv6ExtHeaders,
 	}, nil
 }
 
@@ -2253,4 +2257,30 @@ func (p *Parser) validateFlow(flow string) error {
 	}
 
 	return fmt.Errorf("invalid flow value '%s'", flow)
+}
+
+// extractIPv6ExtHeaders extracts IPv6 extension header options from the options map
+func extractIPv6ExtHeaders(options map[string]string) []IPv6ExtensionHeader {
+	var headers []IPv6ExtensionHeader
+
+	extHeaderTypes := []string{
+		"hopopts",
+		"dstopts",
+		"routing",
+		"fragment",
+		"ah",
+		"esp",
+		"mip6",
+	}
+
+	for _, htype := range extHeaderTypes {
+		if val, ok := options[htype]; ok && val != "" && val != "true" {
+			headers = append(headers, IPv6ExtensionHeader{
+				Type:    htype,
+				Options: val,
+			})
+		}
+	}
+
+	return headers
 }

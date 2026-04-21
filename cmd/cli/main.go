@@ -428,15 +428,10 @@ func validateRule(rule *rules.ParsedRule, generator *packets.Generator) []lintIs
 	for i, pcre := range rule.PCREMatches {
 		pcreIssues := rules.AnalyzePCRE(pcre.Pattern, pcre.Modifiers)
 		for _, pi := range pcreIssues {
-			severity := "warning"
-			if pi.Severity == "error" {
-				severity = "error"
-			}
 			issues = append(issues, lintIssue{
 				isError: pi.Severity == "error",
 				msg:     fmt.Sprintf("pcre[%d]: %s", i, pi.Message),
 			})
-			_ = severity
 		}
 
 		// Legacy check for unsupported modifiers

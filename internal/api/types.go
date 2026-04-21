@@ -28,12 +28,15 @@ type TestRunRequest struct {
 }
 
 type TestRunResponse struct {
-	TestRunID string `json:"test_run_id"`
-	Status    string `json:"status"`
-	Total     int    `json:"total"`
-	Success   int    `json:"success"`
-	Failed    int    `json:"failed"`
-	Message   string `json:"message"`
+	TestRunID   string   `json:"test_run_id"`
+	Status      string   `json:"status"`
+	Total       int      `json:"total"`
+	Success     int      `json:"success"`
+	Failed      int      `json:"failed"`
+	Message     string   `json:"message"`
+	JSONPath    string   `json:"json_path,omitempty"`
+	HTMLPath    string   `json:"html_path,omitempty"`
+	ReportErrors []string `json:"report_errors,omitempty"`
 }
 
 type ErrorResponse struct {
@@ -61,4 +64,14 @@ type TestResultItem struct {
 	Status      string   `json:"status"`
 	Error       string   `json:"error,omitempty"`
 	Duration    string   `json:"duration"`
+}
+
+type BatchDeleteRequest struct {
+	IDs []string `json:"ids"`
+}
+
+type BatchDeleteResponse struct {
+	Deleted []string `json:"deleted"`
+	Failed  []string `json:"failed,omitempty"`
+	Count   int      `json:"count"`
 }

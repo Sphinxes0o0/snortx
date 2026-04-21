@@ -80,11 +80,6 @@ func (h *Handlers) loadResults() {
 	}
 }
 
-// deleteResult removes a persisted test result
-func (h *Handlers) deleteResult(testRunID string) error {
-	path := h.persistPath(testRunID)
-	return os.Remove(path)
-}
 
 func (h *Handlers) UploadRules(w http.ResponseWriter, r *http.Request) {
 	file, _, err := r.FormFile("rules")
@@ -220,6 +215,12 @@ func (h *Handlers) RunTests(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Determine status based on errors
+	status := "completed"
+	if len(reportErrs) > 0 {
+		status = "completed_with_errors"
+	}
+
 	var msg string
 	if len(reportErrs) > 0 {
 		msg = fmt.Sprintf("JSON: %s, HTML: %s, Errors: %v", jsonPath, htmlPath, reportErrs)
@@ -227,12 +228,15 @@ func (h *Handlers) RunTests(w http.ResponseWriter, r *http.Request) {
 		msg = fmt.Sprintf("JSON: %s, HTML: %s", jsonPath, htmlPath)
 	}
 	resp := TestRunResponse{
-		TestRunID: result.TestRunID,
-		Status:    "completed",
-		Total:     result.TotalRules,
-		Success:   result.SuccessCount,
-		Failed:    result.FailureCount,
-		Message:   msg,
+		TestRunID:    result.TestRunID,
+		Status:       status,
+		Total:        result.TotalRules,
+		Success:      result.SuccessCount,
+		Failed:       result.FailureCount,
+		Message:      msg,
+		JSONPath:     jsonPath,
+		HTMLPath:     htmlPath,
+		ReportErrors: reportErrs,
 	}
 
 	h.writeJSON(w, http.StatusOK, resp)
@@ -323,6 +327,72 @@ func (h *Handlers) GetTestResults(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handlers) DeleteTestResult(w http.ResponseWriter, r *http.Request) {
+	testRunID := r.URL.Query().Get("id")
+	if testRunID == "" {
+		h.writeError(w, http.StatusBadRequest, "missing test_run_id", "")
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if _, exists := h.testRuns[testRunID]; !exists {
+		h.writeError(w, http.StatusNotFound, "test run not found", "")
+		return
+	}
+
+	// Delete from memory
+	delete(h.testRuns, testRunID)
+
+	// Delete persisted file
+	path := h.persistPath(testRunID)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		h.writeError(w, http.StatusInternalServerError, "failed to delete persisted result", err.Error())
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "test_run_id": testRunID})
+}
+
+func (h *Handlers) BatchDeleteTestResults(w http.ResponseWriter, r *http.Request) {
+	var req BatchDeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+
+	if len(req.IDs) == 0 {
+		h.writeError(w, http.StatusBadRequest, "no IDs provided", "")
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	var deleted []string
+	var failed []string
+
+	for _, id := range req.IDs {
+		if _, exists := h.testRuns[id]; exists {
+			delete(h.testRuns, id)
+		}
+
+		path := h.persistPath(id)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			failed = append(failed, id)
+		} else {
+			deleted = append(deleted, id)
+		}
+	}
+
+	h.writeJSON(w, http.StatusOK, BatchDeleteResponse{
+		Deleted: deleted,
+		Failed:  failed,
+		Count:   len(deleted),
+	})
 }
 
 func (h *Handlers) writeJSON(w http.ResponseWriter, status int, v interface{}) {
