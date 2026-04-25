@@ -29,6 +29,7 @@ engine:
     interface: eth0
     snap_len: 8192
     timeout: 500ms
+    tx_engine: sendmmsg
 api:
   address: :9090
   tls_enabled: true
@@ -66,6 +67,9 @@ cli:
 	}
 	if cfg.Engine.Generator.DefaultSrcPort != 54321 {
 		t.Errorf("expected Engine.Generator.DefaultSrcPort 54321, got %d", cfg.Engine.Generator.DefaultSrcPort)
+	}
+	if cfg.Engine.Sender.TxEngine != "sendmmsg" {
+		t.Errorf("expected Engine.Sender.TxEngine 'sendmmsg', got %q", cfg.Engine.Sender.TxEngine)
 	}
 	if cfg.Engine.Generator.Vars == nil {
 		t.Error("expected Engine.Generator.Vars to be non-nil")
@@ -133,6 +137,9 @@ func TestLoadDefault(t *testing.T) {
 	}
 	if cfg.Engine.Sender.Interface != "lo0" {
 		t.Errorf("expected Engine.Sender.Interface 'lo0', got %q", cfg.Engine.Sender.Interface)
+	}
+	if cfg.Engine.Sender.TxEngine != "pcap" {
+		t.Errorf("expected Engine.Sender.TxEngine 'pcap', got %q", cfg.Engine.Sender.TxEngine)
 	}
 	if cfg.Engine.Generator.Vars == nil {
 		t.Error("expected Engine.Generator.Vars to be non-nil in default config")

@@ -41,6 +41,7 @@ type Engine struct {
 
 	// flowbitState tracks flowbit states for stateful rule processing
 	flowbitState map[string]bool
+	flowbitMu    sync.RWMutex
 }
 
 type EngineConfig struct {
@@ -80,7 +81,9 @@ func (e *Engine) Run(parsedRules []*rules.ParsedRule) (*reports.TestRunResult, e
 	e.testRunResult.StartedAt = time.Now()
 
 	// Reset flowbit state for this run
+	e.flowbitMu.Lock()
 	e.flowbitState = make(map[string]bool)
+	e.flowbitMu.Unlock()
 
 	for i := 0; i < e.WorkerCount; i++ {
 		e.wg.Add(1)
@@ -189,6 +192,9 @@ func (e *Engine) checkFlowbits(rule *rules.ParsedRule) bool {
 		return true
 	}
 
+	e.flowbitMu.RLock()
+	defer e.flowbitMu.RUnlock()
+
 	for _, fb := range rule.Flowbits {
 		switch fb.Op {
 		case rules.FlowbitIsSet:
@@ -206,6 +212,9 @@ func (e *Engine) checkFlowbits(rule *rules.ParsedRule) bool {
 
 // setFlowbits sets flowbit states after a successful rule match
 func (e *Engine) setFlowbits(rule *rules.ParsedRule) {
+	e.flowbitMu.Lock()
+	defer e.flowbitMu.Unlock()
+
 	for _, fb := range rule.Flowbits {
 		switch fb.Op {
 		case rules.FlowbitSet:
@@ -293,8 +302,8 @@ func (e *Engine) evictPCRECache() {
 
 	// Find oldest entries
 	type entry struct {
-		key   string
-		time  time.Time
+		key  string
+		time time.Time
 	}
 	var entries []entry
 	for k, v := range e.pcreCache {

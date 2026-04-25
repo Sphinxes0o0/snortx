@@ -172,6 +172,15 @@ func TestParser_ParseRule(t *testing.T) {
 	}
 }
 
+func TestParser_ParseRule_MissingDstPort(t *testing.T) {
+	parser := NewParser()
+	rule := `alert tcp any any -> any (sid:1; rev:1;)`
+
+	if _, err := parser.ParseRule(rule); err == nil {
+		t.Fatal("expected parse error for missing dst port")
+	}
+}
+
 func TestParser_ParseMulti(t *testing.T) {
 	parser := NewParser()
 

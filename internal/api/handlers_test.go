@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/user/snortx/internal/reports"
 	"github.com/user/snortx/internal/rules"
 )
 
@@ -89,6 +90,14 @@ func TestHandlers_ParseRules_InvalidRules(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected status 200, got %d", w.Code)
 	}
+
+	var resp ParseResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(resp.Errors) == 0 {
+		t.Error("expected parse errors for invalid rules")
+	}
 }
 
 func TestHandlers_HealthCheck(t *testing.T) {
@@ -136,6 +145,71 @@ func TestHandlers_GetTestResults_MissingID(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected status 400, got %d", w.Code)
+	}
+}
+
+func TestHandlers_GetTestResults_NoPaginationReturnsFullResult(t *testing.T) {
+	h := NewHandlers(t.TempDir())
+
+	result := reports.NewTestRunResult()
+	result.TestRunID = "run-no-pagination"
+	result.AddResult(&reports.TestResult{RuleSID: 1, RuleMsg: "r1", Protocol: "tcp", Status: "success"})
+	result.AddResult(&reports.TestResult{RuleSID: 2, RuleMsg: "r2", Protocol: "udp", Status: "failed", Error: "x"})
+	h.testRuns[result.TestRunID] = result
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tests/results?id="+result.TestRunID, nil)
+	w := httptest.NewRecorder()
+	h.GetTestResults(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	var resp reports.TestRunResult
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.TotalRules != 2 {
+		t.Errorf("expected TotalRules 2, got %d", resp.TotalRules)
+	}
+	if len(resp.Results) != 2 {
+		t.Errorf("expected 2 results, got %d", len(resp.Results))
+	}
+}
+
+func TestHandlers_GetTestResults_PageAndPageSizeParsing(t *testing.T) {
+	h := NewHandlers(t.TempDir())
+
+	result := reports.NewTestRunResult()
+	result.TestRunID = "run-pagination"
+	result.AddResult(&reports.TestResult{RuleSID: 1, RuleMsg: "r1", Protocol: "tcp", Status: "success"})
+	result.AddResult(&reports.TestResult{RuleSID: 2, RuleMsg: "r2", Protocol: "tcp", Status: "success"})
+	result.AddResult(&reports.TestResult{RuleSID: 3, RuleMsg: "r3", Protocol: "udp", Status: "failed", Error: "err"})
+	h.testRuns[result.TestRunID] = result
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tests/results?id="+result.TestRunID+"&page=2&page_size=2", nil)
+	w := httptest.NewRecorder()
+	h.GetTestResults(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	var resp TestResultsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Page != 2 {
+		t.Errorf("expected page 2, got %d", resp.Page)
+	}
+	if resp.PageSize != 2 {
+		t.Errorf("expected page_size 2, got %d", resp.PageSize)
+	}
+	if len(resp.Results) != 1 {
+		t.Errorf("expected 1 result on page 2, got %d", len(resp.Results))
+	}
+	if len(resp.Results) == 1 && resp.Results[0].RuleSID != 3 {
+		t.Errorf("expected SID 3 on page 2, got %d", resp.Results[0].RuleSID)
 	}
 }
 
@@ -188,6 +262,32 @@ func TestHandlers_RunTests(t *testing.T) {
 
 	// May fail due to sender setup, but should not panic
 	_ = w.Code
+}
+
+func TestHandlers_RunTests_AllInvalidRules(t *testing.T) {
+	h := NewHandlers(t.TempDir())
+
+	body := `{"rules":"not a valid snort rule"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/tests/run", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	h.RunTests(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", w.Code)
+	}
+
+	var resp ParseResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Count != 0 {
+		t.Errorf("expected 0 parsed rules, got %d", resp.Count)
+	}
+	if len(resp.Errors) == 0 {
+		t.Error("expected parse errors in response")
+	}
 }
 
 func TestErrorResponse(t *testing.T) {

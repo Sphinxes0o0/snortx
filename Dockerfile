@@ -4,7 +4,7 @@ FROM golang:1.21-alpine AS builder
 WORKDIR /app
 
 # Install build dependencies
-RUN apk add --no-cache git
+RUN apk add --no-cache git build-base libpcap-dev
 
 # Copy go mod files
 COPY go.mod go.sum ./
@@ -14,8 +14,8 @@ RUN go mod download
 COPY . .
 
 # Build binaries
-RUN CGO_ENABLED=0 GOOS=linux go build -o /snortx ./cmd/cli
-RUN CGO_ENABLED=0 GOOS=linux go build -o /snortx-api ./cmd/api
+RUN CGO_ENABLED=1 GOOS=linux go build -o /snortx ./cmd/cli
+RUN CGO_ENABLED=1 GOOS=linux go build -o /snortx-api ./cmd/api
 
 # Final stage
 FROM alpine:3.19

@@ -2,7 +2,7 @@ package api
 
 import (
 	"context"
-	"crypto/tls"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -10,9 +10,12 @@ import (
 )
 
 type Server struct {
-	srv      *http.Server
-	router   *mux.Router
-	handlers *Handlers
+	srv        *http.Server
+	router     *mux.Router
+	handlers   *Handlers
+	tlsEnabled bool
+	tlsCert    string
+	tlsKey     string
 }
 
 type ServerConfig struct {
@@ -42,20 +45,22 @@ func NewServer(cfg ServerConfig) *Server {
 			ReadTimeout:  30 * time.Second,
 			WriteTimeout: 30 * time.Second,
 		},
-		router:   router,
-		handlers: h,
-	}
-
-	if cfg.TLSEnabled {
-		srv.srv.TLSConfig = &tls.Config{}
+		router:     router,
+		handlers:   h,
+		tlsEnabled: cfg.TLSEnabled,
+		tlsCert:    cfg.TLSCert,
+		tlsKey:     cfg.TLSKey,
 	}
 
 	return srv
 }
 
 func (s *Server) Start() error {
-	if s.srv.TLSConfig != nil {
-		return s.srv.ListenAndServeTLS("", "")
+	if s.tlsEnabled {
+		if s.tlsCert == "" || s.tlsKey == "" {
+			return fmt.Errorf("tls enabled but tls_cert or tls_key is empty")
+		}
+		return s.srv.ListenAndServeTLS(s.tlsCert, s.tlsKey)
 	}
 	return s.srv.ListenAndServe()
 }

@@ -24,6 +24,7 @@ engine:
     interface: "lo0"
     snap_len: 65536
     timeout: 1s
+    tx_engine: "pcap"
 
 api:
   address: ":8080"

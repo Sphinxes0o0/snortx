@@ -304,3 +304,37 @@ func TestGenerator_BidirectionalRules(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerator_TCPFlagsOption(t *testing.T) {
+	g := NewGenerator()
+	rule := &rules.ParsedRule{
+		Protocol:  "tcp",
+		SrcNet:    "192.168.1.1",
+		DstNet:    "10.0.0.1",
+		SrcPorts:  "12345",
+		DstPorts:  "80",
+		Direction: "->",
+		Options: map[string]string{
+			"tcp_flags": "syn",
+		},
+	}
+
+	tcp := g.buildTCPFlags(rule, false)
+	if !tcp.SYN {
+		t.Error("expected SYN=true")
+	}
+	if tcp.ACK || tcp.PSH || tcp.RST || tcp.FIN || tcp.URG {
+		t.Error("expected only SYN flag to be set")
+	}
+}
+
+func TestResolveTTL(t *testing.T) {
+	rule := &rules.ParsedRule{
+		Options: map[string]string{
+			"ttl": "128",
+		},
+	}
+	if ttl := resolveTTL(rule); ttl != 128 {
+		t.Fatalf("resolveTTL() = %d, want 128", ttl)
+	}
+}

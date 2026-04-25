@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -409,6 +410,54 @@ func TestEngine_ConcurrentRuleGeneration(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestEngine_ConcurrentFlowbitWrites(t *testing.T) {
+	tmpDir := t.TempDir()
+	generator := packets.NewGenerator()
+	sender, _ := packets.NewSender(tmpDir, "lo0")
+
+	eng, err := New(EngineConfig{
+		Generator:   generator,
+		Sender:      sender,
+		WorkerCount: 8,
+		OutputDir:   tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ruleCount := 200
+	rulesList := make([]*rules.ParsedRule, 0, ruleCount)
+	for i := 0; i < ruleCount; i++ {
+		rulesList = append(rulesList, &rules.ParsedRule{
+			Protocol:  "tcp",
+			SrcNet:    "any",
+			DstNet:    "any",
+			SrcPorts:  "any",
+			DstPorts:  "80",
+			Direction: "->",
+			RuleID:    rules.RuleID{SID: i + 1},
+			Msg:       "flowbit write test",
+			Contents: []rules.ContentMatch{
+				{Raw: []byte("test")},
+			},
+			Flowbits: []rules.Flowbit{
+				{Op: rules.FlowbitSet, Name: fmt.Sprintf("fb_%d", i)},
+			},
+		})
+	}
+
+	result, err := eng.Run(rulesList)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.TotalRules != ruleCount {
+		t.Errorf("expected TotalRules %d, got %d", ruleCount, result.TotalRules)
+	}
+	if result.SuccessCount != ruleCount {
+		t.Errorf("expected SuccessCount %d, got %d", ruleCount, result.SuccessCount)
+	}
 }
 
 func TestMain(m *testing.M) {

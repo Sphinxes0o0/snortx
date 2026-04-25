@@ -20,6 +20,9 @@ var (
 	authToken   string
 	corsOrigins string
 	rateLimit   int
+	tlsEnabled  bool
+	tlsCert     string
+	tlsKey      string
 )
 
 var rootCmd = &cobra.Command{
@@ -40,6 +43,9 @@ func init() {
 	serveCmd.Flags().StringVar(&authToken, "auth-token", "", "Bearer token for API authentication")
 	serveCmd.Flags().StringVar(&corsOrigins, "cors", "", "Comma-separated list of allowed CORS origins")
 	serveCmd.Flags().IntVar(&rateLimit, "rate-limit", 100, "Rate limit (requests per second)")
+	serveCmd.Flags().BoolVar(&tlsEnabled, "tls", false, "Enable TLS")
+	serveCmd.Flags().StringVar(&tlsCert, "tls-cert", "", "TLS certificate path")
+	serveCmd.Flags().StringVar(&tlsKey, "tls-key", "", "TLS private key path")
 }
 
 func main() {
@@ -61,8 +67,11 @@ func startServer(cmd *cobra.Command, args []string) error {
 	}
 
 	srv := api.NewServer(api.ServerConfig{
-		Address:   listenAddr,
-		OutputDir: outputDir,
+		Address:    listenAddr,
+		OutputDir:  outputDir,
+		TLSEnabled: tlsEnabled,
+		TLSCert:    tlsCert,
+		TLSKey:     tlsKey,
 		Auth: api.AuthConfig{
 			Enabled: authToken != "",
 			Token:   authToken,
@@ -86,6 +95,9 @@ func startServer(cmd *cobra.Command, args []string) error {
 	}
 	if len(cors) > 0 {
 		fmt.Printf("CORS: %v\n", cors)
+	}
+	if tlsEnabled {
+		fmt.Printf("TLS: enabled (cert=%s, key=%s)\n", tlsCert, tlsKey)
 	}
 	fmt.Printf("Rate limit: %d req/s\n", rateLimit)
 

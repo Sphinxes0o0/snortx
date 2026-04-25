@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/gopacket"
@@ -22,6 +23,27 @@ const (
 	ModeBoth
 )
 
+type TxEngine string
+
+const (
+	TxEnginePCAP     TxEngine = "pcap"
+	TxEngineSendMmsg TxEngine = "sendmmsg"
+	TxEngineAFPacket TxEngine = "afpacket"
+)
+
+func ParseTxEngine(s string) (TxEngine, error) {
+	switch TxEngine(strings.ToLower(strings.TrimSpace(s))) {
+	case "", TxEnginePCAP:
+		return TxEnginePCAP, nil
+	case TxEngineSendMmsg:
+		return TxEngineSendMmsg, nil
+	case TxEngineAFPacket:
+		return TxEngineAFPacket, nil
+	default:
+		return "", fmt.Errorf("invalid tx engine: %s", s)
+	}
+}
+
 type SendResult struct {
 	RuleSID        int           `json:"rule_sid"`
 	RuleMsg        string        `json:"rule_msg"`
@@ -35,11 +57,17 @@ type SendResult struct {
 	Duration       time.Duration `json:"duration"`
 }
 
+type packetInjector interface {
+	WritePacketData(data []byte) error
+	Close()
+}
+
 type Sender struct {
-	OutputDir  string
-	Interface  string
-	Mode       SendMode
-	pcapHandle *pcap.Handle
+	OutputDir string
+	Interface string
+	Mode      SendMode
+	TxEngine  TxEngine
+	injector  packetInjector
 }
 
 func NewSender(outputDir, iface string) (*Sender, error) {
@@ -47,10 +75,20 @@ func NewSender(outputDir, iface string) (*Sender, error) {
 }
 
 func NewSenderWithMode(outputDir, iface string, mode SendMode) (*Sender, error) {
+	return NewSenderWithModeAndEngine(outputDir, iface, mode, TxEnginePCAP)
+}
+
+func NewSenderWithModeAndEngine(outputDir, iface string, mode SendMode, txEngine TxEngine) (*Sender, error) {
+	parsedEngine, err := ParseTxEngine(string(txEngine))
+	if err != nil {
+		return nil, err
+	}
+
 	s := &Sender{
 		OutputDir: outputDir,
 		Interface: iface,
 		Mode:      mode,
+		TxEngine:  parsedEngine,
 	}
 
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -58,20 +96,51 @@ func NewSenderWithMode(outputDir, iface string, mode SendMode) (*Sender, error) 
 	}
 
 	if mode == ModeInject || mode == ModeBoth {
-		handle, err := pcap.OpenLive(iface, 65536, true, -1)
+		injector, err := newPacketInjector(iface, parsedEngine)
 		if err != nil {
-			return nil, fmt.Errorf("failed to open interface %s: %w", iface, err)
+			return nil, err
 		}
-		s.pcapHandle = handle
+		s.injector = injector
 	}
 
 	return s, nil
 }
 
-func (s *Sender) Close() {
-	if s.pcapHandle != nil {
-		s.pcapHandle.Close()
+func newPacketInjector(iface string, txEngine TxEngine) (packetInjector, error) {
+	switch txEngine {
+	case TxEnginePCAP:
+		handle, err := pcap.OpenLive(iface, 65536, true, -1)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open interface %s: %w", iface, err)
+		}
+		return handle, nil
+	case TxEngineSendMmsg:
+		return nil, fmt.Errorf("tx engine %q is not implemented yet", txEngine)
+	case TxEngineAFPacket:
+		return nil, fmt.Errorf("tx engine %q is not implemented yet", txEngine)
+	default:
+		return nil, fmt.Errorf("unsupported tx engine: %s", txEngine)
 	}
+}
+
+func (s *Sender) Close() {
+	if s.injector != nil {
+		s.injector.Close()
+	}
+}
+
+// InjectPacket injects a raw packet when sender mode supports live injection.
+func (s *Sender) InjectPacket(data []byte) error {
+	if len(data) == 0 {
+		return fmt.Errorf("empty packet data")
+	}
+	if s.Mode != ModeInject && s.Mode != ModeBoth {
+		return fmt.Errorf("sender mode does not support injection")
+	}
+	if s.injector == nil {
+		return fmt.Errorf("pcap handle is not initialized")
+	}
+	return s.injector.WritePacketData(data)
 }
 
 func (s *Sender) SendAndRecord(rule *rules.ParsedRule, packets []gopacket.Packet) SendResult {
@@ -116,7 +185,7 @@ func (s *Sender) SendAndRecord(rule *rules.ParsedRule, packets []gopacket.Packet
 		}
 
 		if s.Mode == ModeInject || s.Mode == ModeBoth {
-			if err := s.pcapHandle.WritePacketData(data); err == nil {
+			if s.injector != nil && s.injector.WritePacketData(data) == nil {
 				sent++
 			}
 		} else {

@@ -31,6 +31,9 @@ var (
 	authToken    string
 	corsOrigins  string
 	rateLimit    int
+	tlsEnabled   bool
+	tlsCert      string
+	tlsKey       string
 	configFile   string
 	parseJSON    bool
 )
@@ -40,7 +43,7 @@ const version = "1.0.0"
 var rootCmd = &cobra.Command{
 	Use:   "snortx",
 	Short: "Snort rule testing tool",
-	Long:  `snortx parses Snort rules, generates matching network packets,
+	Long: `snortx parses Snort rules, generates matching network packets,
 records them to PCAP files, and generates HTML/JSON test reports.`,
 }
 
@@ -126,6 +129,9 @@ func init() {
 	serveCmd.Flags().StringVar(&authToken, "auth-token", "", "Bearer token for API authentication")
 	serveCmd.Flags().StringVar(&corsOrigins, "cors", "", "Comma-separated list of allowed CORS origins")
 	serveCmd.Flags().IntVar(&rateLimit, "rate-limit", 100, "Rate limit (requests per second)")
+	serveCmd.Flags().BoolVar(&tlsEnabled, "tls", false, "Enable TLS")
+	serveCmd.Flags().StringVar(&tlsCert, "tls-cert", "", "TLS certificate path")
+	serveCmd.Flags().StringVar(&tlsKey, "tls-key", "", "TLS private key path")
 
 	batchCmd.Flags().IntVarP(&batchWorkers, "workers", "w", 4, "Number of parallel workers for batch processing (default 4)")
 
@@ -208,7 +214,12 @@ func runTests(cmd *cobra.Command, args []string) error {
 		mode = packets.ModeBoth
 	}
 
-	sender, err := packets.NewSenderWithMode(outputDir, interface_, mode)
+	txEngine, err := senderTxEngineFromConfig(cfg)
+	if err != nil {
+		return err
+	}
+
+	sender, err := packets.NewSenderWithModeAndEngine(outputDir, interface_, mode, txEngine)
 	if err != nil {
 		return fmt.Errorf("failed to create sender: %w", err)
 	}
@@ -261,10 +272,37 @@ func runTests(cmd *cobra.Command, args []string) error {
 }
 
 func startServer(cmd *cobra.Command, args []string) error {
+	cfg := loadConfig()
+
 	addr, _ := cmd.Flags().GetString("addr")
 	authToken, _ := cmd.Flags().GetString("auth-token")
 	corsStr, _ := cmd.Flags().GetString("cors")
 	rate, _ := cmd.Flags().GetInt("rate-limit")
+	tlsEnabledVal, _ := cmd.Flags().GetBool("tls")
+	tlsCertVal, _ := cmd.Flags().GetString("tls-cert")
+	tlsKeyVal, _ := cmd.Flags().GetString("tls-key")
+
+	if !cmd.Flags().Changed("addr") && cfg.API.Address != "" {
+		addr = cfg.API.Address
+	}
+	if !cmd.Flags().Changed("auth-token") && cfg.API.Auth.Enabled {
+		authToken = cfg.API.Auth.Token
+	}
+	if !cmd.Flags().Changed("cors") && len(cfg.API.CORS) > 0 {
+		corsStr = strings.Join(cfg.API.CORS, ",")
+	}
+	if !cmd.Flags().Changed("rate-limit") && cfg.API.RateLimit > 0 {
+		rate = cfg.API.RateLimit
+	}
+	if !cmd.Flags().Changed("tls") {
+		tlsEnabledVal = cfg.API.TLSEnabled
+	}
+	if !cmd.Flags().Changed("tls-cert") {
+		tlsCertVal = cfg.API.TLSCert
+	}
+	if !cmd.Flags().Changed("tls-key") {
+		tlsKeyVal = cfg.API.TLSKey
+	}
 
 	corsOrigins := []string{}
 	if corsStr != "" {
@@ -274,8 +312,11 @@ func startServer(cmd *cobra.Command, args []string) error {
 	}
 
 	srv := api.NewServer(api.ServerConfig{
-		Address:   addr,
-		OutputDir: outputDir,
+		Address:    addr,
+		OutputDir:  outputDir,
+		TLSEnabled: tlsEnabledVal,
+		TLSCert:    tlsCertVal,
+		TLSKey:     tlsKeyVal,
 		Auth: api.AuthConfig{
 			Enabled: authToken != "",
 			Token:   authToken,
@@ -291,6 +332,9 @@ func startServer(cmd *cobra.Command, args []string) error {
 	}
 	if len(corsOrigins) > 0 {
 		fmt.Printf("CORS: %v\n", corsOrigins)
+	}
+	if tlsEnabledVal {
+		fmt.Printf("TLS: enabled (cert=%s, key=%s)\n", tlsCertVal, tlsKeyVal)
 	}
 	fmt.Printf("Rate limit: %d req/s\n", rate)
 
@@ -458,6 +502,10 @@ func batchTest(cmd *cobra.Command, args []string) error {
 	cfg := loadConfig()
 	parser := rules.NewParser()
 	generator := packets.NewGeneratorWithVars(cfg.Engine.Generator.Vars)
+	txEngine, err := senderTxEngineFromConfig(cfg)
+	if err != nil {
+		return err
+	}
 
 	totalRules := 0
 	totalSuccess := 0
@@ -486,7 +534,7 @@ func batchTest(cmd *cobra.Command, args []string) error {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			sender, err := packets.NewSenderWithMode(outputDir, interface_, packets.ModePCAP)
+			sender, err := packets.NewSenderWithModeAndEngine(outputDir, interface_, packets.ModePCAP, txEngine)
 			if err != nil {
 				fmt.Printf("Error creating sender for %s: %v\n", ruleFile, err)
 				return
@@ -532,6 +580,18 @@ func batchTest(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func senderTxEngineFromConfig(cfg *config.Config) (packets.TxEngine, error) {
+	engineName := "pcap"
+	if cfg != nil && cfg.Engine.Sender.TxEngine != "" {
+		engineName = cfg.Engine.Sender.TxEngine
+	}
+	txEngine, err := packets.ParseTxEngine(engineName)
+	if err != nil {
+		return "", fmt.Errorf("invalid sender tx_engine in config: %w", err)
+	}
+	return txEngine, nil
 }
 
 var benchIterations int

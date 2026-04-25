@@ -41,15 +41,16 @@ type SenderConfig struct {
 	Interface string `yaml:"interface"`
 	SnapLen   int    `yaml:"snap_len"`
 	Timeout   string `yaml:"timeout"`
+	TxEngine  string `yaml:"tx_engine"`
 }
 
 type APIConfig struct {
-	Address    string   `yaml:"address"`
-	TLSEnabled bool    `yaml:"tls_enabled"`
-	TLSCert    string   `yaml:"tls_cert"`
-	TLSKey     string   `yaml:"tls_key"`
-	CORS       []string `yaml:"cors_allowed_origins"`
-	RateLimit  int      `yaml:"rate_limit"`
+	Address    string     `yaml:"address"`
+	TLSEnabled bool       `yaml:"tls_enabled"`
+	TLSCert    string     `yaml:"tls_cert"`
+	TLSKey     string     `yaml:"tls_key"`
+	CORS       []string   `yaml:"cors_allowed_origins"`
+	RateLimit  int        `yaml:"rate_limit"`
 	Auth       AuthConfig `yaml:"auth"`
 }
 
@@ -108,6 +109,7 @@ func LoadDefault() *Config {
 				Interface: "lo0",
 				SnapLen:   65536,
 				Timeout:   "1s",
+				TxEngine:  "pcap",
 			},
 		},
 		API: APIConfig{

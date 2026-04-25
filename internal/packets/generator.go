@@ -156,12 +156,12 @@ func (g *Generator) buildARP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 		AddrType:          layers.LinkTypeEthernet,
 		Protocol:          layers.EthernetTypeIPv4,
 		HwAddressSize:     6,
-		ProtAddressSize:  4,
+		ProtAddressSize:   4,
 		Operation:         layers.ARPRequest,
 		SourceHwAddress:   []byte(g.srcMAC()),
 		SourceProtAddress: net.ParseIP(srcIP).To4(),
-		DstHwAddress:     []byte{0, 0, 0, 0, 0, 0},
-		DstProtAddress:   net.ParseIP(dstIP).To4(),
+		DstHwAddress:      []byte{0, 0, 0, 0, 0, 0},
+		DstProtAddress:    net.ParseIP(dstIP).To4(),
 	}
 
 	eth := &layers.Ethernet{
@@ -219,7 +219,7 @@ func (g *Generator) buildDNS(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 			Protocol: layers.IPProtocolUDP,
 			Version:  4,
 			IHL:      5,
-			TTL:      64,
+			TTL:      resolveTTL(rule),
 		}
 		udp := &layers.UDP{
 			SrcPort: layers.UDPPort(srcPort),
@@ -240,7 +240,7 @@ func (g *Generator) buildDNS(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 			SrcIP:      srcIPParsed,
 			DstIP:      dstIPParsed,
 			Version:    6,
-			HopLimit:   64,
+			HopLimit:   resolveTTL(rule),
 			NextHeader: layers.IPProtocolUDP,
 		}
 		udp := &layers.UDP{
@@ -350,7 +350,7 @@ func (g *Generator) buildTCP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 				Protocol: layers.IPProtocolTCP,
 				Version:  4,
 				IHL:      5,
-				TTL:      64,
+				TTL:      resolveTTL(rule),
 			}
 			tcp := g.buildTCPFlags(rule, reverse)
 			tcp.SetNetworkLayerForChecksum(ip)
@@ -372,7 +372,7 @@ func (g *Generator) buildTCP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 				SrcIP:      srcIPParsed,
 				DstIP:      dstIPParsed,
 				Version:    6,
-				HopLimit:   64,
+				HopLimit:   resolveTTL(rule),
 				NextHeader: layers.IPProtocolTCP,
 			}
 			tcp := g.buildTCPFlags(rule, reverse)
@@ -395,7 +395,7 @@ func (g *Generator) buildTCP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 				Protocol: layers.IPProtocolTCP,
 				Version:  4,
 				IHL:      5,
-				TTL:      64,
+				TTL:      resolveTTL(rule),
 			}
 			tcp := g.buildTCPFlags(rule, reverse)
 			tcp.SetNetworkLayerForChecksum(ip)
@@ -413,7 +413,7 @@ func (g *Generator) buildTCP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 				SrcIP:      srcIPParsed,
 				DstIP:      dstIPParsed,
 				Version:    6,
-				HopLimit:   64,
+				HopLimit:   resolveTTL(rule),
 				NextHeader: layers.IPProtocolTCP,
 			}
 			tcp := g.buildTCPFlags(rule, reverse)
@@ -452,6 +452,10 @@ func (g *Generator) buildTCPFlags(rule *rules.ParsedRule, reverse bool) *layers.
 		ACK:     true,
 	}
 
+	if flagsRaw, ok := getRuleOption(rule, "tcp_flags"); ok && applyTCPFlags(tcp, flagsRaw) {
+		return tcp
+	}
+
 	flow := rule.Flow
 	if flow == "" {
 		return tcp
@@ -484,6 +488,96 @@ func (g *Generator) buildTCPFlags(rule *rules.ParsedRule, reverse bool) *layers.
 	}
 
 	return tcp
+}
+
+func getRuleOption(rule *rules.ParsedRule, key string) (string, bool) {
+	if rule == nil || rule.Options == nil {
+		return "", false
+	}
+	if v, ok := rule.Options[key]; ok {
+		return strings.TrimSpace(v), true
+	}
+	for k, v := range rule.Options {
+		if strings.EqualFold(k, key) {
+			return strings.TrimSpace(v), true
+		}
+	}
+	return "", false
+}
+
+func applyTCPFlags(tcp *layers.TCP, flagsRaw string) bool {
+	flagsRaw = strings.TrimSpace(strings.ToLower(flagsRaw))
+	if flagsRaw == "" {
+		return false
+	}
+
+	tcp.SYN = false
+	tcp.ACK = false
+	tcp.PSH = false
+	tcp.RST = false
+	tcp.FIN = false
+	tcp.URG = false
+
+	applied := false
+	parts := strings.FieldsFunc(flagsRaw, func(r rune) bool {
+		return r == ',' || r == '|' || r == ' ' || r == '+'
+	})
+	for _, part := range parts {
+		switch strings.TrimSpace(part) {
+		case "":
+			continue
+		case "all":
+			tcp.SYN = true
+			tcp.ACK = true
+			tcp.PSH = true
+			tcp.RST = true
+			tcp.FIN = true
+			tcp.URG = true
+			applied = true
+		case "none":
+			applied = true
+		case "syn":
+			tcp.SYN = true
+			applied = true
+		case "ack":
+			tcp.ACK = true
+			applied = true
+		case "psh":
+			tcp.PSH = true
+			applied = true
+		case "rst":
+			tcp.RST = true
+			applied = true
+		case "fin":
+			tcp.FIN = true
+			applied = true
+		case "urg":
+			tcp.URG = true
+			applied = true
+		}
+	}
+
+	return applied
+}
+
+func resolveTTL(rule *rules.ParsedRule) uint8 {
+	const defaultTTL = 64
+	if rule == nil {
+		return defaultTTL
+	}
+
+	if raw, ok := getRuleOption(rule, "ttl"); ok {
+		if ttl, err := strconv.Atoi(raw); err == nil && ttl >= 1 && ttl <= 255 {
+			return uint8(ttl)
+		}
+	}
+	if raw, ok := getRuleOption(rule, "hop_limit"); ok {
+		if ttl, err := strconv.Atoi(raw); err == nil && ttl >= 1 && ttl <= 255 {
+			return uint8(ttl)
+		}
+	}
+
+	return defaultTTL
 }
 
 func (g *Generator) buildUDP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Packet, error) {
@@ -524,7 +618,7 @@ func (g *Generator) buildUDP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 				Protocol: layers.IPProtocolUDP,
 				Version:  4,
 				IHL:      5,
-				TTL:      64,
+				TTL:      resolveTTL(rule),
 			}
 			udp := &layers.UDP{
 				SrcPort: layers.UDPPort(srcPort),
@@ -549,7 +643,7 @@ func (g *Generator) buildUDP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 				SrcIP:      srcIPParsed,
 				DstIP:      dstIPParsed,
 				Version:    6,
-				HopLimit:   64,
+				HopLimit:   resolveTTL(rule),
 				NextHeader: layers.IPProtocolUDP,
 			}
 			udp := &layers.UDP{
@@ -575,7 +669,7 @@ func (g *Generator) buildUDP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 				Protocol: layers.IPProtocolUDP,
 				Version:  4,
 				IHL:      5,
-				TTL:      64,
+				TTL:      resolveTTL(rule),
 			}
 			udp := &layers.UDP{
 				SrcPort: layers.UDPPort(srcPort),
@@ -596,7 +690,7 @@ func (g *Generator) buildUDP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 				SrcIP:      srcIPParsed,
 				DstIP:      dstIPParsed,
 				Version:    6,
-				HopLimit:   64,
+				HopLimit:   resolveTTL(rule),
 				NextHeader: layers.IPProtocolUDP,
 			}
 			udp := &layers.UDP{
@@ -638,7 +732,7 @@ func (g *Generator) buildICMP(rule *rules.ParsedRule, reverse bool) ([]gopacket.
 		Protocol: layers.IPProtocolICMPv4,
 		Version:  4,
 		IHL:      5,
-		TTL:      64,
+		TTL:      resolveTTL(rule),
 	}
 
 	icmp := &layers.ICMPv4{
@@ -684,7 +778,7 @@ func (g *Generator) buildIP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Pa
 			DstIP:   dstIPParsed,
 			Version: 4,
 			IHL:     5,
-			TTL:     64,
+			TTL:     resolveTTL(rule),
 		}
 		err := gopacket.SerializeLayers(buf, opts, eth, ip, gopacket.Payload(payload))
 		if err != nil {
@@ -701,7 +795,7 @@ func (g *Generator) buildIP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Pa
 			SrcIP:      srcIPParsed,
 			DstIP:      dstIPParsed,
 			Version:    6,
-			HopLimit:   64,
+			HopLimit:   resolveTTL(rule),
 			NextHeader: layers.IPProtocol(0), // No next header for raw IP payload
 		}
 		err := gopacket.SerializeLayers(buf, opts, eth, ip6, gopacket.Payload(payload))
@@ -747,7 +841,7 @@ func (g *Generator) buildSCTP(rule *rules.ParsedRule, reverse bool) ([]gopacket.
 			Protocol: layers.IPProtocolSCTP,
 			Version:  4,
 			IHL:      5,
-			TTL:      64,
+			TTL:      resolveTTL(rule),
 		}
 		sctp := &layers.SCTP{
 			SrcPort: layers.SCTPPort(srcPort),
@@ -768,7 +862,7 @@ func (g *Generator) buildSCTP(rule *rules.ParsedRule, reverse bool) ([]gopacket.
 			SrcIP:      srcIPParsed,
 			DstIP:      dstIPParsed,
 			Version:    6,
-			HopLimit:   64,
+			HopLimit:   resolveTTL(rule),
 			NextHeader: layers.IPProtocolSCTP,
 		}
 		sctp := &layers.SCTP{

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 
 	"github.com/user/snortx/internal/engine"
@@ -80,7 +81,6 @@ func (h *Handlers) loadResults() {
 	}
 }
 
-
 func (h *Handlers) UploadRules(w http.ResponseWriter, r *http.Request) {
 	file, _, err := r.FormFile("rules")
 	if err != nil {
@@ -105,7 +105,7 @@ func (h *Handlers) UploadRules(w http.ResponseWriter, r *http.Request) {
 	resp := ParseResponse{
 		Rules:  result.Rules,
 		Count:  len(result.Rules),
-		Errors: []ParseError{},
+		Errors: convertParseErrors(result.Errors),
 	}
 
 	h.writeJSON(w, http.StatusOK, resp)
@@ -128,7 +128,7 @@ func (h *Handlers) ParseRules(w http.ResponseWriter, r *http.Request) {
 	resp := ParseResponse{
 		Rules:  result.Rules,
 		Count:  len(result.Rules),
-		Errors: []ParseError{},
+		Errors: convertParseErrors(result.Errors),
 	}
 
 	h.writeJSON(w, http.StatusOK, resp)
@@ -146,6 +146,15 @@ func (h *Handlers) RunTests(w http.ResponseWriter, r *http.Request) {
 	parseResult, err := parser.ParseMulti(req.Rules)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, "failed to parse rules", err.Error())
+		return
+	}
+	parseErrors := convertParseErrors(parseResult.Errors)
+	if len(parseResult.Rules) == 0 {
+		h.writeJSON(w, http.StatusBadRequest, ParseResponse{
+			Rules:  []*rules.ParsedRule{},
+			Count:  0,
+			Errors: parseErrors,
+		})
 		return
 	}
 
@@ -217,7 +226,7 @@ func (h *Handlers) RunTests(w http.ResponseWriter, r *http.Request) {
 
 	// Determine status based on errors
 	status := "completed"
-	if len(reportErrs) > 0 {
+	if len(reportErrs) > 0 || len(parseErrors) > 0 {
 		status = "completed_with_errors"
 	}
 
@@ -236,10 +245,29 @@ func (h *Handlers) RunTests(w http.ResponseWriter, r *http.Request) {
 		Message:      msg,
 		JSONPath:     jsonPath,
 		HTMLPath:     htmlPath,
+		ParseErrors:  parseErrors,
 		ReportErrors: reportErrs,
 	}
 
 	h.writeJSON(w, http.StatusOK, resp)
+}
+
+func convertParseErrors(errs []*rules.ParseError) []ParseError {
+	if len(errs) == 0 {
+		return []ParseError{}
+	}
+	out := make([]ParseError, 0, len(errs))
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		out = append(out, ParseError{
+			Line:  err.Line,
+			Error: err.Error(),
+			Rule:  err.RuleText,
+		})
+	}
+	return out
 }
 
 func (h *Handlers) GetTestResults(w http.ResponseWriter, r *http.Request) {
@@ -252,14 +280,18 @@ func (h *Handlers) GetTestResults(w http.ResponseWriter, r *http.Request) {
 	// Parse pagination params
 	page := 1
 	pageSize := 50
+	hasPage := false
+	hasPageSize := false
 	if p := r.URL.Query().Get("page"); p != "" {
-		if pi, err := fmt.Sscanf(p, "%d", &page); err == nil && pi > 0 {
-			// page parsed
+		hasPage = true
+		if parsed, err := strconv.Atoi(p); err == nil && parsed > 0 {
+			page = parsed
 		}
 	}
 	if ps := r.URL.Query().Get("page_size"); ps != "" {
-		if psi, err := fmt.Sscanf(ps, "%d", &pageSize); err == nil && psi > 0 {
-			pageSize = psi
+		hasPageSize = true
+		if parsed, err := strconv.Atoi(ps); err == nil && parsed > 0 {
+			pageSize = parsed
 			if pageSize > 100 {
 				pageSize = 100 // cap at 100
 			}
@@ -276,7 +308,7 @@ func (h *Handlers) GetTestResults(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// If no pagination requested, return full result (backward compatible)
-	if page <= 0 && pageSize >= len(result.Results) {
+	if !hasPage && !hasPageSize {
 		h.writeJSON(w, http.StatusOK, result)
 		return
 	}

@@ -96,7 +96,7 @@ func (p *Parser) ParseRule(text string) (*ParsedRule, error) {
 			CharOffset: 0,
 			Phase:      PhaseFormat,
 			Message:    "empty or comment line",
-			RuleText:  text,
+			RuleText:   text,
 		}
 	}
 
@@ -116,7 +116,7 @@ func (p *Parser) ParseRule(text string) (*ParsedRule, error) {
 			CharOffset: strings.Index(text, "("),
 			Phase:      PhaseFormat,
 			Message:    "missing opening parenthesis for options",
-			RuleText:  origText,
+			RuleText:   origText,
 		}
 	}
 
@@ -176,11 +176,11 @@ func (p *Parser) ParseRule(text string) (*ParsedRule, error) {
 
 func (p *Parser) validateHeader(header string) *ParseError {
 	fields := strings.Fields(header)
-	if len(fields) < 6 {
+	if len(fields) < 7 {
 		return &ParseError{
 			CharOffset: 0,
 			Phase:      PhaseHeader,
-			Message:    fmt.Sprintf("header has %d fields, expected at least 6 (action protocol src_net src_ports direction dst_net dst_ports)", len(fields)),
+			Message:    fmt.Sprintf("header has %d fields, expected at least 7 (action protocol src_net src_ports direction dst_net dst_ports)", len(fields)),
 			Context:    header,
 		}
 	}
@@ -202,7 +202,7 @@ func (p *Parser) validateHeader(header string) *ParseError {
 		return &ParseError{
 			CharOffset: strings.Index(header, fields[4]),
 			Phase:      PhaseHeader,
-			Message:    fmt.Sprintf("invalid direction '%s', expected '->' or '<>'", fields[4]),
+			Message:    fmt.Sprintf("invalid direction '%s', expected '->', '<>', or '<-'", fields[4]),
 			Context:    header,
 		}
 	}
@@ -233,30 +233,30 @@ func (p *Parser) parseHeader(header string) (action, protocol, srcNet, srcPorts,
 
 func isAppProtocol(proto string) bool {
 	appProtocols := map[string]bool{
-		"http":    true,
-		"https":   true,
-		"http2":   true,
-		"ftp":     true,
-		"ssh":     true,
-		"telnet":  true,
-		"smtp":    true,
-		"pop3":    true,
-		"imap":    true,
-		"dns":     true,
-		"rdp":     true,
-		"sip":     true,
-		"smb":     true,
-		"dcerpc":  true,
-		"ntp":     true,
-		"snmp":    true,
-		"rtsp":    true,
-		"tftp":    true,
-		"ldap":    true,
-		"irc":     true,
-		"mysql":   true,
+		"http":       true,
+		"https":      true,
+		"http2":      true,
+		"ftp":        true,
+		"ssh":        true,
+		"telnet":     true,
+		"smtp":       true,
+		"pop3":       true,
+		"imap":       true,
+		"dns":        true,
+		"rdp":        true,
+		"sip":        true,
+		"smb":        true,
+		"dcerpc":     true,
+		"ntp":        true,
+		"snmp":       true,
+		"rtsp":       true,
+		"tftp":       true,
+		"ldap":       true,
+		"irc":        true,
+		"mysql":      true,
 		"postgresql": true,
-		"mssql":   true,
-		"oracle":  true,
+		"mssql":      true,
+		"oracle":     true,
 	}
 	return appProtocols[strings.ToLower(proto)]
 }
@@ -2225,13 +2225,13 @@ func validateRuleID(ruleID RuleID) error {
 // validateFlow validates flow option values
 func (p *Parser) validateFlow(flow string) error {
 	validFlows := map[string]bool{
-		"established":        true,
-		"to_server":          true,
-		"to_client":          true,
-		"from_server":        true,
-		"from_client":        true,
-		"only_stream":        true,
-		"no_stream":         true,
+		"established":             true,
+		"to_server":               true,
+		"to_client":               true,
+		"from_server":             true,
+		"from_client":             true,
+		"only_stream":             true,
+		"no_stream":               true,
 		"established,to_server":   true,
 		"established,to_client":   true,
 		"established,from_server": true,
