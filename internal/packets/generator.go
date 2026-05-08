@@ -69,6 +69,8 @@ func randomMAC() net.HardwareAddr {
 var defaultSrcMAC = net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x01}
 var defaultDstMAC = net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x02}
 
+const maxGeneratedPayloadSize = 64 * 1024
+
 func (g *Generator) srcMAC() net.HardwareAddr {
 	if g.RandomMAC {
 		return randomMAC()
@@ -137,14 +139,11 @@ func (g *Generator) Generate(rule *rules.ParsedRule) ([]gopacket.Packet, error) 
 }
 
 func (g *Generator) buildARP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Packet, error) {
-	srcIP := g.expandIP(rule.SrcNet)
-	dstIP := g.expandIP(rule.DstNet)
-
-	if reverse {
-		srcIP, dstIP = dstIP, srcIP
+	srcIP, dstIP := g.resolveIPs(rule, reverse)
+	payload, err := g.buildPayloadForRule(rule)
+	if err != nil {
+		return nil, err
 	}
-
-	payload := g.buildPayload(rule.Contents, rule.PCREMatches)
 
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 
@@ -179,13 +178,11 @@ func (g *Generator) buildARP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 }
 
 func (g *Generator) buildDNS(rule *rules.ParsedRule, reverse bool) ([]gopacket.Packet, error) {
-	srcIP := g.expandIP(rule.SrcNet)
-	dstIP := g.expandIP(rule.DstNet)
+	srcIP, dstIP := g.resolveIPs(rule, reverse)
 	srcPort := g.expandPort(rule.SrcPorts)
 	dstPort := g.expandPort(rule.DstPorts)
 
 	if reverse {
-		srcIP, dstIP = dstIP, srcIP
 		srcPort, dstPort = dstPort, srcPort
 	}
 
@@ -313,17 +310,18 @@ func (g *Generator) buildDNSQuery(domain []byte) []byte {
 }
 
 func (g *Generator) buildTCP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Packet, error) {
-	srcIP := g.expandIP(rule.SrcNet)
-	dstIP := g.expandIP(rule.DstNet)
+	srcIP, dstIP := g.resolveIPs(rule, reverse)
 	srcPort := g.expandPort(rule.SrcPorts)
 	dstPort := g.expandPort(rule.DstPorts)
 
 	if reverse {
-		srcIP, dstIP = dstIP, srcIP
 		srcPort, dstPort = dstPort, srcPort
 	}
 
-	payload := g.buildPayload(rule.Contents, rule.PCREMatches)
+	payload, err := g.buildPayloadForRule(rule)
+	if err != nil {
+		return nil, err
+	}
 
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 
@@ -455,6 +453,9 @@ func (g *Generator) buildTCPFlags(rule *rules.ParsedRule, reverse bool) *layers.
 	if flagsRaw, ok := getRuleOption(rule, "tcp_flags"); ok && applyTCPFlags(tcp, flagsRaw) {
 		return tcp
 	}
+	if flagsRaw, ok := getRuleOption(rule, "flags"); ok && applyTCPFlags(tcp, flagsRaw) {
+		return tcp
+	}
 
 	flow := rule.Flow
 	if flow == "" {
@@ -581,17 +582,18 @@ func resolveTTL(rule *rules.ParsedRule) uint8 {
 }
 
 func (g *Generator) buildUDP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Packet, error) {
-	srcIP := g.expandIP(rule.SrcNet)
-	dstIP := g.expandIP(rule.DstNet)
+	srcIP, dstIP := g.resolveIPs(rule, reverse)
 	srcPort := g.expandPort(rule.SrcPorts)
 	dstPort := g.expandPort(rule.DstPorts)
 
 	if reverse {
-		srcIP, dstIP = dstIP, srcIP
 		srcPort, dstPort = dstPort, srcPort
 	}
 
-	payload := g.buildPayload(rule.Contents, rule.PCREMatches)
+	payload, err := g.buildPayloadForRule(rule)
+	if err != nil {
+		return nil, err
+	}
 
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 
@@ -709,14 +711,11 @@ func (g *Generator) buildUDP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 }
 
 func (g *Generator) buildICMP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Packet, error) {
-	srcIP := g.expandIP(rule.SrcNet)
-	dstIP := g.expandIP(rule.DstNet)
-
-	if reverse {
-		srcIP, dstIP = dstIP, srcIP
+	srcIP, dstIP := g.resolveIPs(rule, reverse)
+	payload, err := g.buildPayloadForRule(rule)
+	if err != nil {
+		return nil, err
 	}
-
-	payload := g.buildPayload(rule.Contents, rule.PCREMatches)
 
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 
@@ -736,11 +735,13 @@ func (g *Generator) buildICMP(rule *rules.ParsedRule, reverse bool) ([]gopacket.
 	}
 
 	icmp := &layers.ICMPv4{
-		TypeCode: layers.CreateICMPv4TypeCode(layers.ICMPv4TypeEchoRequest, 0),
+		TypeCode: layers.CreateICMPv4TypeCode(resolveICMPType(rule), resolveICMPCode(rule)),
+		Id:       resolveICMPIdentifier(rule, "icmp_id"),
+		Seq:      resolveICMPIdentifier(rule, "icmp_seq"),
 	}
 
 	buf := gopacket.NewSerializeBuffer()
-	err := gopacket.SerializeLayers(buf, opts, eth, ip, icmp, gopacket.Payload(payload))
+	err = gopacket.SerializeLayers(buf, opts, eth, ip, icmp, gopacket.Payload(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -750,14 +751,11 @@ func (g *Generator) buildICMP(rule *rules.ParsedRule, reverse bool) ([]gopacket.
 }
 
 func (g *Generator) buildIP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Packet, error) {
-	srcIP := g.expandIP(rule.SrcNet)
-	dstIP := g.expandIP(rule.DstNet)
-
-	if reverse {
-		srcIP, dstIP = dstIP, srcIP
+	srcIP, dstIP := g.resolveIPs(rule, reverse)
+	payload, err := g.buildPayloadForRule(rule)
+	if err != nil {
+		return nil, err
 	}
-
-	payload := g.buildPayload(rule.Contents, rule.PCREMatches)
 
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 
@@ -780,7 +778,7 @@ func (g *Generator) buildIP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Pa
 			IHL:     5,
 			TTL:     resolveTTL(rule),
 		}
-		err := gopacket.SerializeLayers(buf, opts, eth, ip, gopacket.Payload(payload))
+		err = gopacket.SerializeLayers(buf, opts, eth, ip, gopacket.Payload(payload))
 		if err != nil {
 			return nil, err
 		}
@@ -798,7 +796,7 @@ func (g *Generator) buildIP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Pa
 			HopLimit:   resolveTTL(rule),
 			NextHeader: layers.IPProtocol(0), // No next header for raw IP payload
 		}
-		err := gopacket.SerializeLayers(buf, opts, eth, ip6, gopacket.Payload(payload))
+		err = gopacket.SerializeLayers(buf, opts, eth, ip6, gopacket.Payload(payload))
 		if err != nil {
 			return nil, err
 		}
@@ -809,17 +807,18 @@ func (g *Generator) buildIP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Pa
 }
 
 func (g *Generator) buildSCTP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Packet, error) {
-	srcIP := g.expandIP(rule.SrcNet)
-	dstIP := g.expandIP(rule.DstNet)
+	srcIP, dstIP := g.resolveIPs(rule, reverse)
 	srcPort := g.expandPort(rule.SrcPorts)
 	dstPort := g.expandPort(rule.DstPorts)
 
 	if reverse {
-		srcIP, dstIP = dstIP, srcIP
 		srcPort, dstPort = dstPort, srcPort
 	}
 
-	payload := g.buildPayload(rule.Contents, rule.PCREMatches)
+	payload, err := g.buildPayloadForRule(rule)
+	if err != nil {
+		return nil, err
+	}
 
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 
@@ -881,7 +880,11 @@ func (g *Generator) buildSCTP(rule *rules.ParsedRule, reverse bool) ([]gopacket.
 
 func (g *Generator) buildPayload(contents []rules.ContentMatch, pcreMatches []rules.PCREMatch) []byte {
 	if len(contents) > 0 {
-		result := make([]byte, 0)
+		totalLen := 0
+		for _, c := range contents {
+			totalLen += len(c.Raw)
+		}
+		result := make([]byte, 0, totalLen)
 		for _, c := range contents {
 			result = append(result, c.Raw...)
 		}
@@ -898,6 +901,18 @@ func (g *Generator) buildPayload(contents []rules.ContentMatch, pcreMatches []ru
 	}
 
 	return []byte("test payload")
+}
+
+func (g *Generator) buildPayloadForRule(rule *rules.ParsedRule) ([]byte, error) {
+	payload := g.buildPayload(rule.Contents, rule.PCREMatches)
+	dsize, err := resolveDSize(rule)
+	if err != nil {
+		return nil, err
+	}
+	if dsize == nil {
+		return payload, nil
+	}
+	return applyDSize(payload, dsize)
 }
 
 // extractLiteralFromPCRE tries to extract a literal string from a PCRE pattern
@@ -1048,6 +1063,18 @@ func decodeEscapedString(pattern string) []byte {
 	return result
 }
 
+func (g *Generator) resolveIPs(rule *rules.ParsedRule, reverse bool) (string, string) {
+	srcIP := g.expandIP(rule.SrcNet)
+	dstIP := g.expandIP(rule.DstNet)
+	if optionEnabled(rule, "sameip") {
+		dstIP = srcIP
+	}
+	if reverse {
+		srcIP, dstIP = dstIP, srcIP
+	}
+	return srcIP, dstIP
+}
+
 func (g *Generator) expandIP(net_ string) string {
 	if net_ == "any" || net_ == "" {
 		return g.DefaultDstIP
@@ -1075,6 +1102,169 @@ func (g *Generator) expandIP(net_ string) string {
 	}
 
 	return net_
+}
+
+func optionEnabled(rule *rules.ParsedRule, key string) bool {
+	raw, ok := getRuleOption(rule, key)
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "true", "1", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveDSize(rule *rules.ParsedRule) (*rules.DSizeOption, error) {
+	if rule == nil {
+		return nil, nil
+	}
+	if rule.DSize != nil {
+		return rule.DSize, nil
+	}
+	raw, ok := getRuleOption(rule, "dsize")
+	if !ok {
+		return nil, nil
+	}
+	raw = strings.TrimSpace(strings.TrimPrefix(raw, "dsize:"))
+	if raw == "" {
+		return nil, nil
+	}
+	ds := &rules.DSizeOption{}
+	switch {
+	case strings.Contains(raw, "<>"):
+		ds.Op = "<>"
+		ds.IsRange = true
+		parts := strings.SplitN(raw, "<>", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid dsize range %q", raw)
+		}
+		min, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil {
+			return nil, fmt.Errorf("invalid dsize min %q: %w", parts[0], err)
+		}
+		max, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil {
+			return nil, fmt.Errorf("invalid dsize max %q: %w", parts[1], err)
+		}
+		ds.Min = min
+		ds.Max = max
+	case strings.HasPrefix(raw, ">"):
+		ds.Op = ">"
+		min, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(raw, ">")))
+		if err != nil {
+			return nil, fmt.Errorf("invalid dsize lower bound %q: %w", raw, err)
+		}
+		ds.Min = min
+	case strings.HasPrefix(raw, "<"):
+		ds.Op = "<"
+		max, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(raw, "<")))
+		if err != nil {
+			return nil, fmt.Errorf("invalid dsize upper bound %q: %w", raw, err)
+		}
+		ds.Max = max
+	default:
+		ds.Op = "="
+		size, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(raw, "=")))
+		if err != nil {
+			return nil, fmt.Errorf("invalid dsize value %q: %w", raw, err)
+		}
+		ds.Min = size
+		ds.Max = ds.Min
+	}
+	return ds, nil
+}
+
+func applyDSize(payload []byte, dsize *rules.DSizeOption) ([]byte, error) {
+	if dsize == nil {
+		return payload, nil
+	}
+
+	switch dsize.Op {
+	case "=":
+		return resizePayload(payload, dsize.Min)
+	case ">":
+		target := dsize.Min + 1
+		if len(payload) >= target {
+			return payload, nil
+		}
+		return resizePayload(payload, target)
+	case "<":
+		target := dsize.Max - 1
+		if target < 0 {
+			return nil, fmt.Errorf("invalid dsize<%d target", dsize.Max)
+		}
+		if len(payload) > target {
+			return nil, fmt.Errorf("payload length %d does not satisfy dsize<%d", len(payload), dsize.Max)
+		}
+		return payload, nil
+	case "<>":
+		if len(payload) > dsize.Max {
+			return nil, fmt.Errorf("payload length %d does not satisfy dsize:%d<>%d", len(payload), dsize.Min, dsize.Max)
+		}
+		if len(payload) >= dsize.Min {
+			return payload, nil
+		}
+		return resizePayload(payload, dsize.Min)
+	default:
+		return payload, nil
+	}
+}
+
+func resizePayload(payload []byte, target int) ([]byte, error) {
+	if target < 0 {
+		return nil, fmt.Errorf("invalid payload target size %d", target)
+	}
+	if target > maxGeneratedPayloadSize {
+		return nil, fmt.Errorf("payload target size %d exceeds max %d", target, maxGeneratedPayloadSize)
+	}
+	if len(payload) > target {
+		return nil, fmt.Errorf("payload length %d exceeds target size %d", len(payload), target)
+	}
+	if len(payload) == target {
+		return payload, nil
+	}
+	// Preserve deterministic padding while keeping the synthetic payload close to
+	// the rule's content by repeating the last generated byte when possible.
+	padding := byte('A')
+	if len(payload) > 0 {
+		padding = payload[len(payload)-1]
+	}
+	out := make([]byte, target)
+	copy(out, payload)
+	for i := len(payload); i < target; i++ {
+		out[i] = padding
+	}
+	return out, nil
+}
+
+func resolveICMPType(rule *rules.ParsedRule) uint8 {
+	if raw, ok := getRuleOption(rule, "itype"); ok {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 && parsed <= 255 {
+			return uint8(parsed)
+		}
+	}
+	return uint8(layers.ICMPv4TypeEchoRequest)
+}
+
+func resolveICMPCode(rule *rules.ParsedRule) uint8 {
+	if raw, ok := getRuleOption(rule, "icode"); ok {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 && parsed <= 255 {
+			return uint8(parsed)
+		}
+	}
+	return 0
+}
+
+func resolveICMPIdentifier(rule *rules.ParsedRule, key string) uint16 {
+	if raw, ok := getRuleOption(rule, key); ok {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 && parsed <= 65535 {
+			return uint16(parsed)
+		}
+	}
+	return 0
 }
 
 func (g *Generator) extractIPFromCIDR(cidr string) string {

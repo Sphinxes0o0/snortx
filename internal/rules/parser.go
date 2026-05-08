@@ -2,7 +2,6 @@ package rules
 
 import (
 	"bufio"
-	"bytes"
 	"fmt"
 	"os"
 	"regexp"
@@ -22,71 +21,135 @@ type ParseResult struct {
 	Errors []*ParseError
 }
 
+const (
+	initialRuleScannerBufferSize = 64 * 1024
+	maxRuleScannerBufferSize     = 1024 * 1024
+)
+
 func (p *Parser) ParseMulti(text string) (*ParseResult, error) {
-	result := &ParseResult{}
-	lines := strings.Split(text, "\n")
-	for lineNum, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		rule, err := p.ParseRule(line)
-		if err != nil {
-			if parseErr, ok := err.(*ParseError); ok {
-				parseErr.Line = lineNum + 1
-				parseErr.RuleText = line
-				result.Errors = append(result.Errors, parseErr)
-			} else {
-				result.Errors = append(result.Errors, &ParseError{
-					Line:     lineNum + 1,
-					Phase:    PhaseFormat,
-					Message:  err.Error(),
-					RuleText: line,
-				})
-			}
-			continue
-		}
-		result.Rules = append(result.Rules, rule)
-	}
-	return result, nil
+	return p.parseRuleText(text), nil
 }
 
 func (p *Parser) ParseFile(path string) (*ParseResult, error) {
-	result := &ParseResult{}
-
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 
-	scanner := bufio.NewScanner(bytes.NewReader(content))
-	lineNum := 0
-	for scanner.Scan() {
-		lineNum++
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		rule, err := p.ParseRule(line)
+	return p.parseRuleText(string(content)), nil
+}
+
+type ruleChunk struct {
+	Text      string
+	StartLine int
+}
+
+func (p *Parser) parseRuleText(text string) *ParseResult {
+	result := &ParseResult{}
+	for _, chunk := range splitRuleText(text) {
+		rule, err := p.ParseRule(chunk.Text)
 		if err != nil {
 			if parseErr, ok := err.(*ParseError); ok {
-				parseErr.Line = lineNum
-				parseErr.RuleText = line
+				parseErr.Line = chunk.StartLine
+				parseErr.RuleText = chunk.Text
 				result.Errors = append(result.Errors, parseErr)
 			} else {
 				result.Errors = append(result.Errors, &ParseError{
-					Line:     lineNum,
+					Line:     chunk.StartLine,
 					Phase:    PhaseFormat,
 					Message:  err.Error(),
-					RuleText: line,
+					RuleText: chunk.Text,
 				})
 			}
 			continue
 		}
 		result.Rules = append(result.Rules, rule)
 	}
+	return result
+}
 
-	return result, nil
+func splitRuleText(text string) []ruleChunk {
+	scanner := bufio.NewScanner(strings.NewReader(text))
+	scanner.Buffer(make([]byte, 0, initialRuleScannerBufferSize), maxRuleScannerBufferSize)
+
+	var chunks []ruleChunk
+	var current strings.Builder
+	startLine := 0
+	depth := 0
+	inQuote := false
+	escaped := false
+	lineNum := 0
+	seenParen := false
+
+	flush := func() {
+		ruleText := strings.TrimSpace(current.String())
+		if ruleText != "" {
+			chunks = append(chunks, ruleChunk{
+				Text:      ruleText,
+				StartLine: startLine,
+			})
+		}
+		current.Reset()
+		startLine = 0
+		depth = 0
+		inQuote = false
+		escaped = false
+		seenParen = false
+	}
+
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+
+		if current.Len() == 0 && (trimmed == "" || strings.HasPrefix(trimmed, "#")) {
+			continue
+		}
+		if current.Len() == 0 {
+			startLine = lineNum
+		} else {
+			current.WriteByte('\n')
+		}
+		current.WriteString(line)
+
+		for i := 0; i < len(line); i++ {
+			ch := line[i]
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' && inQuote {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inQuote = !inQuote
+				continue
+			}
+			if inQuote {
+				continue
+			}
+			switch ch {
+			case '(':
+				depth++
+				seenParen = true
+			case ')':
+				if depth > 0 {
+					depth--
+				}
+			}
+		}
+
+		if seenParen && depth == 0 && !inQuote {
+			flush()
+		}
+	}
+
+	if current.Len() > 0 {
+		flush()
+	}
+
+	return chunks
 }
 
 func (p *Parser) ParseRule(text string) (*ParsedRule, error) {
@@ -148,6 +211,10 @@ func (p *Parser) ParseRule(text string) (*ParsedRule, error) {
 
 	// Extract IPv6 extension headers from options
 	ipv6ExtHeaders := extractIPv6ExtHeaders(options)
+	var dsize *DSizeOption
+	if raw, ok := options["dsize"]; ok {
+		dsize, _ = p.parseDSize(raw)
+	}
 
 	return &ParsedRule{
 		RawText:         origText,
@@ -171,6 +238,7 @@ func (p *Parser) ParseRule(text string) (*ParsedRule, error) {
 		Options:         options,
 		VLANID:          vlanID,
 		IPv6ExtHeaders:  ipv6ExtHeaders,
+		DSize:           dsize,
 	}, nil
 }
 
