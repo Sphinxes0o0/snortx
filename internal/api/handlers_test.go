@@ -100,6 +100,32 @@ func TestHandlers_ParseRules_InvalidRules(t *testing.T) {
 	}
 }
 
+func TestHandlers_ParseRules_MultilineRule(t *testing.T) {
+	h := NewHandlers(t.TempDir())
+
+	body := `{"rules":"alert tcp any any -> any any (\n msg:\"MULTILINE\";\n content:\"test\";\n sid:12;\n rev:1;\n)"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/rules/parse", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	h.ParseRules(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	var resp ParseResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Count != 1 {
+		t.Fatalf("expected 1 parsed rule, got %d", resp.Count)
+	}
+	if len(resp.Errors) != 0 {
+		t.Fatalf("expected no parse errors, got %v", resp.Errors)
+	}
+}
+
 func TestHandlers_HealthCheck(t *testing.T) {
 	h := NewHandlers(t.TempDir())
 

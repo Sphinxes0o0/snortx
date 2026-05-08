@@ -1,6 +1,8 @@
 package rules
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -196,6 +198,66 @@ alert udp any any -> any any (msg:"TEST 2"; content:"test"; sid:2; rev:1;)
 	}
 	if len(result.Rules) != 2 {
 		t.Errorf("expected 2 rules, got %d", len(result.Rules))
+	}
+}
+
+func TestParser_ParseMulti_MultilineRule(t *testing.T) {
+	parser := NewParser()
+	text := `
+alert tcp any any -> any any (
+  msg:"TEST MULTILINE";
+  content:"test";
+  dsize:8;
+  sid:10;
+  rev:1;
+)
+`
+
+	result, err := parser.ParseMulti(text)
+	if err != nil {
+		t.Fatalf("ParseMulti() error = %v", err)
+	}
+	if len(result.Errors) != 0 {
+		t.Fatalf("expected no errors, got %v", result.Errors)
+	}
+	if len(result.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(result.Rules))
+	}
+	if result.Rules[0].RuleID.SID != 10 {
+		t.Fatalf("expected SID 10, got %d", result.Rules[0].RuleID.SID)
+	}
+	if result.Rules[0].DSize == nil || result.Rules[0].DSize.Min != 8 {
+		t.Fatalf("expected dsize to be parsed")
+	}
+}
+
+func TestParser_ParseFile_MultilineRule(t *testing.T) {
+	parser := NewParser()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multiline.rules")
+	content := `alert icmp any any -> any any (
+  msg:"ICMP multiline";
+  itype:3;
+  icode:1;
+  sid:11;
+  rev:1;
+)`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	result, err := parser.ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile() error = %v", err)
+	}
+	if len(result.Errors) != 0 {
+		t.Fatalf("expected no errors, got %v", result.Errors)
+	}
+	if len(result.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(result.Rules))
+	}
+	if got := result.Rules[0].Options["itype"]; got != "3" {
+		t.Fatalf("expected itype 3, got %q", got)
 	}
 }
 

@@ -5,6 +5,7 @@ snortx 是一个基于 Go 的 Snort 规则测试工具，用于解析 Snort 规�
 ## 功能特性
 
 - **规则解析** - 支持完整的 Snort 规则语法解析
+- **多行规则输入** - `ParseFile` / `ParseMulti` 支持多行规则聚合解析
 - **数据包生成** - 根据规则生成匹配的 gopacket 数据包
 - **PCAP 录制** - 将生成的数据包录制到 PCAP 文件
 - **测试报告** - 生成 HTML 和 JSON 格式的测试报告
@@ -18,6 +19,12 @@ snortx 是一个基于 Go 的 Snort 规则测试工具，用于解析 Snort 规�
 TCP, UDP, ICMP, IP (IPv4/IPv6), SCTP, DNS, ARP
 
 应用层协议标识符（http, https, ftp, ssh, smtp, dns 等）会自动映射为 TCP 传输。
+
+已落地的规则语义还包括：
+- `sameip`
+- `flags`
+- `dsize`
+- `itype` / `icode` / `icmp_id` / `icmp_seq`
 
 ## 快速开始
 

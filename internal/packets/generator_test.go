@@ -3,6 +3,7 @@ package packets
 import (
 	"testing"
 
+	"github.com/google/gopacket/layers"
 	"github.com/user/snortx/internal/rules"
 )
 
@@ -336,5 +337,150 @@ func TestResolveTTL(t *testing.T) {
 	}
 	if ttl := resolveTTL(rule); ttl != 128 {
 		t.Fatalf("resolveTTL() = %d, want 128", ttl)
+	}
+}
+
+func TestGenerator_SameIPOption(t *testing.T) {
+	g := NewGenerator()
+	rule := &rules.ParsedRule{
+		Protocol:  "tcp",
+		SrcNet:    "192.168.1.10",
+		DstNet:    "10.0.0.5",
+		SrcPorts:  "12345",
+		DstPorts:  "80",
+		Direction: "->",
+		Contents:  []rules.ContentMatch{{Raw: []byte("test")}},
+		Options: map[string]string{
+			"sameip": "true",
+		},
+	}
+
+	pkts, err := g.Generate(rule)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	ipLayer := pkts[0].Layer(layers.LayerTypeIPv4)
+	if ipLayer == nil {
+		t.Fatal("expected IPv4 layer")
+	}
+	ip := ipLayer.(*layers.IPv4)
+	if !ip.SrcIP.Equal(ip.DstIP) {
+		t.Fatalf("expected same src/dst IP, got %s -> %s", ip.SrcIP, ip.DstIP)
+	}
+}
+
+func TestGenerator_FlagsAliasOption(t *testing.T) {
+	g := NewGenerator()
+	rule := &rules.ParsedRule{
+		Protocol:  "tcp",
+		SrcNet:    "192.168.1.1",
+		DstNet:    "10.0.0.1",
+		SrcPorts:  "12345",
+		DstPorts:  "80",
+		Direction: "->",
+		Options: map[string]string{
+			"flags": "syn,ack",
+		},
+	}
+
+	tcp := g.buildTCPFlags(rule, false)
+	if !tcp.SYN || !tcp.ACK {
+		t.Fatalf("expected SYN and ACK to be set")
+	}
+	if tcp.PSH || tcp.RST || tcp.FIN || tcp.URG {
+		t.Fatalf("expected only SYN/ACK flags to be set")
+	}
+}
+
+func TestGenerator_DSizeOption(t *testing.T) {
+	g := NewGenerator()
+	rule := &rules.ParsedRule{
+		Protocol:  "tcp",
+		SrcNet:    "192.168.1.1",
+		DstNet:    "10.0.0.1",
+		SrcPorts:  "12345",
+		DstPorts:  "80",
+		Direction: "->",
+		Contents:  []rules.ContentMatch{{Raw: []byte("test")}},
+		DSize: &rules.DSizeOption{
+			Op:  "=",
+			Min: 8,
+			Max: 8,
+		},
+	}
+
+	pkts, err := g.Generate(rule)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	app := pkts[0].ApplicationLayer()
+	if app == nil {
+		t.Fatal("expected application payload")
+	}
+	if got := len(app.Payload()); got != 8 {
+		t.Fatalf("expected payload length 8, got %d", got)
+	}
+	if string(app.Payload()[:4]) != "test" {
+		t.Fatalf("expected payload to preserve original content, got %q", app.Payload())
+	}
+}
+
+func TestGenerator_DSizeOptionRejectsImpossiblePayload(t *testing.T) {
+	g := NewGenerator()
+	rule := &rules.ParsedRule{
+		Protocol:  "tcp",
+		SrcNet:    "192.168.1.1",
+		DstNet:    "10.0.0.1",
+		SrcPorts:  "12345",
+		DstPorts:  "80",
+		Direction: "->",
+		Contents:  []rules.ContentMatch{{Raw: []byte("toolong")}},
+		DSize: &rules.DSizeOption{
+			Op:  "<",
+			Max: 4,
+		},
+	}
+
+	if _, err := g.Generate(rule); err == nil {
+		t.Fatal("expected dsize validation error")
+	}
+}
+
+func TestGenerator_ICMPOptions(t *testing.T) {
+	g := NewGenerator()
+	rule := &rules.ParsedRule{
+		Protocol:  "icmp",
+		SrcNet:    "192.168.1.1",
+		DstNet:    "10.0.0.1",
+		Direction: "->",
+		Contents:  []rules.ContentMatch{{Raw: []byte("ping")}},
+		Options: map[string]string{
+			"itype":    "3",
+			"icode":    "1",
+			"icmp_id":  "7",
+			"icmp_seq": "9",
+		},
+	}
+
+	pkts, err := g.Generate(rule)
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	icmpLayer := pkts[0].Layer(layers.LayerTypeICMPv4)
+	if icmpLayer == nil {
+		t.Fatal("expected ICMPv4 layer")
+	}
+	icmp := icmpLayer.(*layers.ICMPv4)
+	if got := uint8(icmp.TypeCode.Type()); got != 3 {
+		t.Fatalf("expected ICMP type 3, got %d", got)
+	}
+	if got := uint8(icmp.TypeCode.Code()); got != 1 {
+		t.Fatalf("expected ICMP code 1, got %d", got)
+	}
+	if icmp.Id != 7 || icmp.Seq != 9 {
+		t.Fatalf("expected ICMP id/seq 7/9, got %d/%d", icmp.Id, icmp.Seq)
 	}
 }
