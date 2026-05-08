@@ -21,6 +21,11 @@ type ParseResult struct {
 	Errors []*ParseError
 }
 
+const (
+	defaultRuleScannerBufferSize = 64 * 1024
+	maxRuleScannerBufferSize     = 1024 * 1024
+)
+
 func (p *Parser) ParseMulti(text string) (*ParseResult, error) {
 	return p.parseRuleText(text), nil
 }
@@ -65,7 +70,7 @@ func (p *Parser) parseRuleText(text string) *ParseResult {
 
 func splitRuleText(text string) []ruleChunk {
 	scanner := bufio.NewScanner(strings.NewReader(text))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, defaultRuleScannerBufferSize), maxRuleScannerBufferSize)
 
 	var chunks []ruleChunk
 	var current strings.Builder

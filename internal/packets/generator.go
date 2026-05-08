@@ -69,6 +69,8 @@ func randomMAC() net.HardwareAddr {
 var defaultSrcMAC = net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x01}
 var defaultDstMAC = net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x02}
 
+const maxGeneratedPayloadSize = 64 * 1024
+
 func (g *Generator) srcMAC() net.HardwareAddr {
 	if g.RandomMAC {
 		return randomMAC()
@@ -903,7 +905,10 @@ func (g *Generator) buildPayload(contents []rules.ContentMatch, pcreMatches []ru
 
 func (g *Generator) buildPayloadForRule(rule *rules.ParsedRule) ([]byte, error) {
 	payload := g.buildPayload(rule.Contents, rule.PCREMatches)
-	dsize := resolveDSize(rule)
+	dsize, err := resolveDSize(rule)
+	if err != nil {
+		return nil, err
+	}
 	if dsize == nil {
 		return payload, nil
 	}
@@ -1112,20 +1117,20 @@ func optionEnabled(rule *rules.ParsedRule, key string) bool {
 	}
 }
 
-func resolveDSize(rule *rules.ParsedRule) *rules.DSizeOption {
+func resolveDSize(rule *rules.ParsedRule) (*rules.DSizeOption, error) {
 	if rule == nil {
-		return nil
+		return nil, nil
 	}
 	if rule.DSize != nil {
-		return rule.DSize
+		return rule.DSize, nil
 	}
 	raw, ok := getRuleOption(rule, "dsize")
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	raw = strings.TrimSpace(strings.TrimPrefix(raw, "dsize:"))
 	if raw == "" {
-		return nil
+		return nil, nil
 	}
 	ds := &rules.DSizeOption{}
 	switch {
@@ -1133,22 +1138,43 @@ func resolveDSize(rule *rules.ParsedRule) *rules.DSizeOption {
 		ds.Op = "<>"
 		ds.IsRange = true
 		parts := strings.SplitN(raw, "<>", 2)
-		if len(parts) == 2 {
-			ds.Min, _ = strconv.Atoi(strings.TrimSpace(parts[0]))
-			ds.Max, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid dsize range %q", raw)
 		}
+		min, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil {
+			return nil, fmt.Errorf("invalid dsize min %q: %w", parts[0], err)
+		}
+		max, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil {
+			return nil, fmt.Errorf("invalid dsize max %q: %w", parts[1], err)
+		}
+		ds.Min = min
+		ds.Max = max
 	case strings.HasPrefix(raw, ">"):
 		ds.Op = ">"
-		ds.Min, _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(raw, ">")))
+		min, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(raw, ">")))
+		if err != nil {
+			return nil, fmt.Errorf("invalid dsize lower bound %q: %w", raw, err)
+		}
+		ds.Min = min
 	case strings.HasPrefix(raw, "<"):
 		ds.Op = "<"
-		ds.Max, _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(raw, "<")))
+		max, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(raw, "<")))
+		if err != nil {
+			return nil, fmt.Errorf("invalid dsize upper bound %q: %w", raw, err)
+		}
+		ds.Max = max
 	default:
 		ds.Op = "="
-		ds.Min, _ = strconv.Atoi(strings.TrimPrefix(raw, "="))
+		size, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(raw, "=")))
+		if err != nil {
+			return nil, fmt.Errorf("invalid dsize value %q: %w", raw, err)
+		}
+		ds.Min = size
 		ds.Max = ds.Min
 	}
-	return ds
+	return ds, nil
 }
 
 func applyDSize(payload []byte, dsize *rules.DSizeOption) ([]byte, error) {
@@ -1190,6 +1216,9 @@ func applyDSize(payload []byte, dsize *rules.DSizeOption) ([]byte, error) {
 func resizePayload(payload []byte, target int) ([]byte, error) {
 	if target < 0 {
 		return nil, fmt.Errorf("invalid payload target size %d", target)
+	}
+	if target > maxGeneratedPayloadSize {
+		return nil, fmt.Errorf("payload target size %d exceeds max %d", target, maxGeneratedPayloadSize)
 	}
 	if len(payload) > target {
 		return nil, fmt.Errorf("payload length %d exceeds target size %d", len(payload), target)
