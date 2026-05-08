@@ -22,7 +22,7 @@ type ParseResult struct {
 }
 
 const (
-	defaultRuleScannerBufferSize = 64 * 1024
+	initialRuleScannerBufferSize = 64 * 1024
 	maxRuleScannerBufferSize     = 1024 * 1024
 )
 
@@ -70,7 +70,7 @@ func (p *Parser) parseRuleText(text string) *ParseResult {
 
 func splitRuleText(text string) []ruleChunk {
 	scanner := bufio.NewScanner(strings.NewReader(text))
-	scanner.Buffer(make([]byte, 0, defaultRuleScannerBufferSize), maxRuleScannerBufferSize)
+	scanner.Buffer(make([]byte, 0, initialRuleScannerBufferSize), maxRuleScannerBufferSize)
 
 	var chunks []ruleChunk
 	var current strings.Builder
