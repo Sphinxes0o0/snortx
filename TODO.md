@@ -180,6 +180,51 @@ macOS loopback performance with 1 worker (~920K PPS). Multi-worker performance d
   - [ ] correlate by tuple + payload signature
 - [ ] Integrate NIC counters (`tx_packets`, `tx_dropped`) into report.
 
+## Deep Review Findings (2026-05-10)
+
+### Critical Issues (Fix Immediately)
+
+| Issue | Severity | Location | Description |
+|-------|----------|----------|-------------|
+| sendmmsg shared sockaddr | High | `sendmmsg_linux.go:118-119` | All packets in batch share same sockaddr pointer; sendmmsg modifies it in-place, corrupting subsequent destinations |
+| File handle leak | High | `sender.go:186-197` | If `WriteFileHeader` fails after `os.Create` succeeds, file descriptor leaks |
+| Silent parseDSize errors | High | `parser.go:214-217,2278-2289` | `parseDSize` errors silently ignored; malformed range inputs accepted |
+| Silent error ignoring | High | `sender.go:211` | `WritePacketData` errors silently ignored in `SendAndRecord` |
+| Potential panic | High | `parser.go:1901-1902` | `decodeContent` panics on single-pipe input `"|"` |
+
+### High Priority Issues
+
+| Issue | Severity | Location | Description |
+|-------|----------|----------|-------------|
+| XSS via PCAPPath | High | `reports/html.go` | `PCAPPath` unescaped in HTML template - allows script injection |
+| Path traversal | High | `reports/html.go`, `api/router.go` | User-controlled paths not validated against traversal attacks |
+| IP spoofing | High | `api/router.go` | `X-Forwarded-For` header trusted for rate limiting without validation |
+| Rate limit global state | High | `flood_cmd.go` | Token bucket uses global state, not per-interface |
+| evictPCRECache deadlock | High | `engine.go:289-292` | Lock held during map iteration, causes deadlock under cache eviction |
+| Context misuse | Medium-High | `flood_cmd.go` | `context.TODO()` left in code; `context.Background()` used inappropriately |
+
+### Medium Priority Issues
+
+| Issue | Severity | Location | Description |
+|-------|----------|----------|-------------|
+| ICMP IPv6 not supported | Medium | `generator.go:713-751` | ICMP builder only handles IPv4; inconsistent with TCP/UDP which support both |
+| TCP flags from_client semantic | Medium | `generator.go:482-485` | `from_client` comment says "server-to-client" but should be client-to-server |
+| Duplicate dsize check | Low-Medium | `parser.go:499-500` | Dead code - identical `dsize:` check appears twice |
+| threshold/rate_filter silent ignore | Medium | `parser.go:484-487` | `threshold` and `rate_filter` errors silently ignored; only `detection_filter` validates |
+| Protocol validation missing | Low | `parser.go:281-299` | Invalid protocol stored without error |
+| Empty flowbits name | Low | `parser.go:2078-2104` | `flowbits:set,` (empty name) accepted without error |
+| Unknown options silent | Low | `parser.go:1802-1809` | Malformed options with typos accepted as `name:"true"` |
+| Repeated regex compilation | Low | `parser.go` (throughout) | `regexp.MustCompile` called per-parse instead of package-level |
+
+### Known Issues (Previously Identified)
+
+| Issue | Status | Location | Description |
+|-------|--------|----------|-------------|
+| Engine flowbit Lock/RLock deadlock | Fixed | `engine.go:139-141` | Fixed by removing internal RLock from `checkFlowbits` |
+| FloodEngine batch deadlock | Known | `flood_cmd.go` | Dead code path with `if false { FloodEngine... }` |
+| AFpacketTXRing SendTimeout | Known | `afpacket_linux.go` | `TPACKET_V3` timeout needs verification |
+| Banner write timeout missing | Known | `scanner.go` | Service detection doesn't set write deadline |
+
 ## Testing
 - [ ] Unit tests for engine selection and parameter validation.
 - [ ] Integration tests for Linux build-tag paths.
