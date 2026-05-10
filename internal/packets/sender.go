@@ -189,6 +189,7 @@ func (s *Sender) SendAndRecord(rule *rules.ParsedRule, packets []gopacket.Packet
 		bw = bufio.NewWriter(f)
 		pcapWriter = pcapgo.NewWriter(bw)
 		if err := pcapWriter.WriteFileHeader(65536, layers.LinkTypeEthernet); err != nil {
+			f.Close()
 			return SendResult{
 				RuleSID: rule.RuleID.SID,
 				RuleMsg: rule.Msg,
@@ -200,6 +201,7 @@ func (s *Sender) SendAndRecord(rule *rules.ParsedRule, packets []gopacket.Packet
 
 	sent := 0
 	written := 0
+	var sendErr error
 
 	for _, pkt := range packets {
 		data := pkt.Data()
@@ -208,8 +210,12 @@ func (s *Sender) SendAndRecord(rule *rules.ParsedRule, packets []gopacket.Packet
 		}
 
 		if s.Mode == ModeInject || s.Mode == ModeBoth {
-			if s.injector != nil && s.injector.WritePacketData(data) == nil {
-				sent++
+			if s.injector != nil {
+				if err := s.injector.WritePacketData(data); err != nil {
+					sendErr = err
+				} else {
+					sent++
+				}
 			}
 		} else {
 			sent++
@@ -238,7 +244,7 @@ func (s *Sender) SendAndRecord(rule *rules.ParsedRule, packets []gopacket.Packet
 		bw.Flush()
 	}
 
-	return SendResult{
+	result := SendResult{
 		RuleSID:        rule.RuleID.SID,
 		RuleMsg:        rule.Msg,
 		PacketsSent:    sent,
@@ -246,6 +252,11 @@ func (s *Sender) SendAndRecord(rule *rules.ParsedRule, packets []gopacket.Packet
 		PCAPPath:       pcapFile,
 		Status:         "success",
 	}
+	if sendErr != nil {
+		result.Status = "failed"
+		result.Error = fmt.Sprintf("packet send error: %v", sendErr)
+	}
+	return result
 }
 
 // BurstSender provides batched packet sending via a single writer goroutine.

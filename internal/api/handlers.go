@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/user/snortx/internal/engine"
@@ -23,6 +25,25 @@ type Handlers struct {
 	outputDir string
 	mu        sync.RWMutex
 	testRuns  map[string]*reports.TestRunResult
+}
+
+// validTestRunIDPattern validates that testRunID contains only safe characters
+// Must match pattern: run_<unix_timestamp> or custom alphanumeric ID
+var validTestRunIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
+
+// isValidTestRunID checks if a test run ID is safe to use
+func isValidTestRunID(id string) bool {
+	if id == "" {
+		return false
+	}
+	if len(id) > 256 {
+		return false
+	}
+	// Check for path traversal patterns
+	if strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, "\\") {
+		return false
+	}
+	return validTestRunIDPattern.MatchString(id)
 }
 
 func NewHandlers(outputDir string) *Handlers {
@@ -276,6 +297,10 @@ func (h *Handlers) GetTestResults(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "missing test_run_id", "")
 		return
 	}
+	if !isValidTestRunID(testRunID) {
+		h.writeError(w, http.StatusBadRequest, "invalid test_run_id", "")
+		return
+	}
 
 	// Parse pagination params
 	page := 1
@@ -367,6 +392,10 @@ func (h *Handlers) DeleteTestResult(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "missing test_run_id", "")
 		return
 	}
+	if !isValidTestRunID(testRunID) {
+		h.writeError(w, http.StatusBadRequest, "invalid test_run_id", "")
+		return
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -399,6 +428,14 @@ func (h *Handlers) BatchDeleteTestResults(w http.ResponseWriter, r *http.Request
 	if len(req.IDs) == 0 {
 		h.writeError(w, http.StatusBadRequest, "no IDs provided", "")
 		return
+	}
+
+	// Validate all IDs before processing
+	for _, id := range req.IDs {
+		if !isValidTestRunID(id) {
+			h.writeError(w, http.StatusBadRequest, "invalid test_run_id in batch", "")
+			return
+		}
 	}
 
 	h.mu.Lock()

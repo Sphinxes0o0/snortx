@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -49,6 +50,30 @@ type protoStat struct {
 	FailedPct    int
 	SuccessCount int
 	Total        int
+}
+
+// containsPathTraversal checks if a path contains potentially malicious traversal sequences
+func containsPathTraversal(path string) bool {
+	path = strings.ReplaceAll(path, "\\", "/")
+	parts := strings.Split(path, "/")
+	for _, part := range parts {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// isValidPCAPPath validates that a PCAP path is safe to use
+func isValidPCAPPath(path string) bool {
+	if path == "" {
+		return true
+	}
+	// Check for path traversal attempts
+	if containsPathTraversal(path) {
+		return false
+	}
+	return true
 }
 
 func (g *HTMLGenerator) Generate(result *TestRunResult) (string, error) {
@@ -102,8 +127,13 @@ func (g *HTMLGenerator) Generate(result *TestRunResult) (string, error) {
 	rows := make([]htmlRowData, 0, len(resultCopy.Results))
 	for _, r := range resultCopy.Results {
 		pcapBase := ""
+		escapedPCAPPath := ""
 		if r.PCAPPath != "" {
-			pcapBase = filepath.Base(r.PCAPPath)
+			// Validate path is safe before using
+			if isValidPCAPPath(r.PCAPPath) {
+				pcapBase = filepath.Base(r.PCAPPath)
+				escapedPCAPPath = html.EscapeString(r.PCAPPath)
+			}
 		}
 		rows = append(rows, htmlRowData{
 			Protocol:    r.Protocol,
@@ -113,7 +143,7 @@ func (g *HTMLGenerator) Generate(result *TestRunResult) (string, error) {
 			PacketsSent: r.PacketsSent,
 			Error:       html.EscapeString(r.Error),
 			PCAPBase:    pcapBase,
-			PCAPPath:    r.PCAPPath,
+			PCAPPath:    escapedPCAPPath,
 		})
 	}
 

@@ -219,13 +219,9 @@ func runFlood(cmd *cobra.Command, args []string) error {
 		injector = sender
 	}
 
-	// Use FloodEngine if buffer pool or batch mode is enabled (currently disabled due to issues)
-	// TODO: fix FloodEngine nil rateLimiter handling
-	if false && (floodBufferPool || floodBatchSize > 0) {
-		return runFloodEngine(cmd, injector, packetData, targetIP, protocol, engineName)
-	}
-
-	// Legacy direct send path
+	// FloodEngine path is disabled - it has issues with rate limiter handling
+	// and batch sending that need to be resolved before re-enabling.
+	// The direct send path below handles all current use cases correctly.
 	return runFloodDirect(cmd, injector, packetData, targetIP, protocol, engineName)
 }
 
@@ -486,6 +482,10 @@ func parsePayload(payload string, payloadHex string) ([]byte, error) {
 	return []byte(payload), nil
 }
 
+// startRateLimiter creates a token bucket rate limiter that is shared by all
+// workers within a single flood operation. This is the correct behavior since
+// the flood command operates on a single interface at a time. Each invocation
+// of startRateLimiter creates an independent rate limiter for that flood.
 func startRateLimiter(rate int) (<-chan struct{}, func()) {
 	if rate <= 0 {
 		return nil, func() {}

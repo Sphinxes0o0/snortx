@@ -480,9 +480,10 @@ func (g *Generator) buildTCPFlags(rule *rules.ParsedRule, reverse bool) *layers.
 		tcp.ACK = true
 		tcp.PSH = true
 	case strings.Contains(flow, "from_client"):
-		tcp.SYN = false
-		tcp.ACK = true
-		tcp.PSH = true
+		// from_client means client -> server (same as to_server)
+		tcp.SYN = true
+		tcp.ACK = false
+		tcp.PSH = false
 	case strings.Contains(flow, "only_stream"):
 		tcp.SYN = false
 		tcp.ACK = true
@@ -719,31 +720,71 @@ func (g *Generator) buildICMP(rule *rules.ParsedRule, reverse bool) ([]gopacket.
 
 	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
 
-	eth := &layers.Ethernet{
-		SrcMAC:       g.srcMAC(),
-		DstMAC:       g.dstMAC(),
-		EthernetType: layers.EthernetTypeIPv4,
-	}
-
-	ip := &layers.IPv4{
-		SrcIP:    net.ParseIP(srcIP),
-		DstIP:    net.ParseIP(dstIP),
-		Protocol: layers.IPProtocolICMPv4,
-		Version:  4,
-		IHL:      5,
-		TTL:      resolveTTL(rule),
-	}
-
-	icmp := &layers.ICMPv4{
-		TypeCode: layers.CreateICMPv4TypeCode(resolveICMPType(rule), resolveICMPCode(rule)),
-		Id:       resolveICMPIdentifier(rule, "icmp_id"),
-		Seq:      resolveICMPIdentifier(rule, "icmp_seq"),
-	}
+	srcIPParsed := net.ParseIP(srcIP)
+	dstIPParsed := net.ParseIP(dstIP)
 
 	buf := gopacket.NewSerializeBuffer()
-	err = gopacket.SerializeLayers(buf, opts, eth, ip, icmp, gopacket.Payload(payload))
-	if err != nil {
-		return nil, err
+
+	if srcIPParsed.To4() != nil || dstIPParsed.To4() != nil {
+		// IPv4
+		eth := &layers.Ethernet{
+			SrcMAC:       g.srcMAC(),
+			DstMAC:       g.dstMAC(),
+			EthernetType: layers.EthernetTypeIPv4,
+		}
+
+		ip := &layers.IPv4{
+			SrcIP:    srcIPParsed,
+			DstIP:    dstIPParsed,
+			Protocol: layers.IPProtocolICMPv4,
+			Version:  4,
+			IHL:      5,
+			TTL:      resolveTTL(rule),
+		}
+
+		icmp := &layers.ICMPv4{
+			TypeCode: layers.CreateICMPv4TypeCode(resolveICMPType(rule), resolveICMPCode(rule)),
+			Id:       resolveICMPIdentifier(rule, "icmp_id"),
+			Seq:      resolveICMPIdentifier(rule, "icmp_seq"),
+		}
+
+		err = gopacket.SerializeLayers(buf, opts, eth, ip, icmp, gopacket.Payload(payload))
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// IPv6
+		eth := &layers.Ethernet{
+			SrcMAC:       g.srcMAC(),
+			DstMAC:       g.dstMAC(),
+			EthernetType: layers.EthernetTypeIPv6,
+		}
+
+		ip6 := &layers.IPv6{
+			SrcIP:      srcIPParsed,
+			DstIP:      dstIPParsed,
+			Version:    6,
+			HopLimit:   resolveTTL(rule),
+			NextHeader: layers.IPProtocolICMPv6,
+		}
+
+		// ICMPv6 doesn't have Id/Seq fields - build them into the payload
+		icmp6 := &layers.ICMPv6{
+			TypeCode: layers.CreateICMPv6TypeCode(resolveICMPType(rule), resolveICMPCode(rule)),
+		}
+
+		// Prepend ICMPv6 identifier and sequence to payload
+		icmpID := resolveICMPIdentifier(rule, "icmp_id")
+		icmpSeq := resolveICMPIdentifier(rule, "icmp_seq")
+		icmpPayload := make([]byte, 4+len(payload))
+		binary.BigEndian.PutUint16(icmpPayload[0:2], icmpID)
+		binary.BigEndian.PutUint16(icmpPayload[2:4], icmpSeq)
+		copy(icmpPayload[4:], payload)
+
+		err = gopacket.SerializeLayers(buf, opts, eth, ip6, icmp6, gopacket.Payload(icmpPayload))
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	packet := gopacket.NewPacket(buf.Bytes(), layers.LayerTypeEthernet, gopacket.Default)

@@ -110,12 +110,17 @@ func (si *SendMmsgInjector) WritePackets(packets [][]byte) error {
 func (si *SendMmsgInjector) buildMsghdrs(packets [][]byte) []unix.Msghdr {
 	msghdrs := make([]unix.Msghdr, len(packets))
 	iovs := make([]unix.Iovec, len(packets))
+	// Each msghdr needs its own sockaddr copy since sendmmsg modifies it in-place
+	addrs := make([]unix.SockaddrInet4, len(packets))
+	for i := range addrs {
+		addrs[i] = si.addr // Copy the address for each packet
+	}
 
 	for i, pkt := range packets {
 		iovs[i].Base = &pkt[0]
 		iovs[i].SetLen(len(pkt))
 
-		msghdrs[i].MsgName = (*byte)(unsafe.Pointer(&si.addr))
+		msghdrs[i].MsgName = (*byte)(unsafe.Pointer(&addrs[i]))
 		msghdrs[i].MsgNamelen = unix.SizeofSockaddrInet4
 		msghdrs[i].MsgIov = &iovs[i]
 		msghdrs[i].MsgIovlen = 1

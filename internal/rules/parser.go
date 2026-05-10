@@ -9,6 +9,13 @@ import (
 	"strings"
 )
 
+// Pre-compiled regexes for parsing
+var (
+	pcreRe   = regexp.MustCompile(`pcre:\s*"/(.+)"/?([imsxAEGRUBPHDMCS]*)"?`)
+	hexRe    = regexp.MustCompile(`content:\s*(?:!)?["']?\|([^|]+)\|["']?`)
+	contentRe = regexp.MustCompile(`content:\s*(?:!)?["']?([^"';]+)["']?`)
+)
+
 type Parser struct{}
 
 func NewParser() *Parser {
@@ -192,7 +199,11 @@ func (p *Parser) ParseRule(text string) (*ParsedRule, error) {
 		return nil, headerErr
 	}
 
-	action, protocol, srcNet, srcPorts, direction, dstNet, dstPorts := p.parseHeader(header)
+	action, protocol, srcNet, srcPorts, direction, dstNet, dstPorts, headerErr := p.parseHeader(header)
+	if headerErr != nil {
+		headerErr.RuleText = origText
+		return nil, headerErr
+	}
 
 	ruleID, msg, contents, pcreMatches, byteTests, byteJumps, flow, flowbits, noAlert, options, vlanID, optErr := p.parseOptions(optionsStr, origText)
 	if optErr != nil {
@@ -213,7 +224,16 @@ func (p *Parser) ParseRule(text string) (*ParsedRule, error) {
 	ipv6ExtHeaders := extractIPv6ExtHeaders(options)
 	var dsize *DSizeOption
 	if raw, ok := options["dsize"]; ok {
-		dsize, _ = p.parseDSize(raw)
+		var dsErr error
+		dsize, dsErr = p.parseDSize(raw)
+		if dsErr != nil {
+			return nil, &ParseError{
+				CharOffset: 0,
+				Phase:      PhaseOptions,
+				Message:    dsErr.Error(),
+				RuleText:   origText,
+			}
+		}
 	}
 
 	return &ParsedRule{
@@ -278,7 +298,7 @@ func (p *Parser) validateHeader(header string) *ParseError {
 	return nil
 }
 
-func (p *Parser) parseHeader(header string) (action, protocol, srcNet, srcPorts, direction, dstNet, dstPorts string) {
+func (p *Parser) parseHeader(header string) (action, protocol, srcNet, srcPorts, direction, dstNet, dstPorts string, err *ParseError) {
 	fields := strings.Fields(header)
 
 	action = fields[0]
@@ -290,13 +310,31 @@ func (p *Parser) parseHeader(header string) (action, protocol, srcNet, srcPorts,
 		protocol = "tcp"
 	}
 
+	// Validate protocol
+	if !isValidProtocol(protocol) {
+		return "", "", "", "", "", "", "", &ParseError{
+			CharOffset: strings.Index(header, protocol),
+			Phase:      PhaseHeader,
+			Message:    fmt.Sprintf("invalid protocol '%s', expected one of: tcp, udp, icmp, ip, arp, sctp", protocol),
+			Context:    header,
+		}
+	}
+
 	srcNet = fields[2]
 	srcPorts = fields[3]
 	direction = fields[4]
 	dstNet = fields[5]
 	dstPorts = fields[6]
 
-	return action, protocol, srcNet, srcPorts, direction, dstNet, dstPorts
+	return action, protocol, srcNet, srcPorts, direction, dstNet, dstPorts, nil
+}
+
+func isValidProtocol(proto string) bool {
+	switch strings.ToLower(proto) {
+	case "tcp", "udp", "icmp", "ip", "arp", "sctp":
+		return true
+	}
+	return false
 }
 
 func isAppProtocol(proto string) bool {
@@ -482,8 +520,28 @@ func (p *Parser) parseOptions(opts string, ruleText string) (RuleID, string, []C
 				flowbits = append(flowbits, fb)
 			}
 		} else if strings.HasPrefix(part, "threshold:") {
+			// Validate threshold syntax
+			_, thErr := p.parseThreshold(part)
+			if thErr != nil {
+				return errRet(&ParseError{
+					CharOffset: offset,
+					Phase:      PhaseOptions,
+					Message:    thErr.Error(),
+					RuleText:   ruleText,
+				})
+			}
 			options["threshold"] = part
 		} else if strings.HasPrefix(part, "rate_filter:") {
+			// Validate rate_filter syntax
+			_, rfErr := p.parseRateFilter(part)
+			if rfErr != nil {
+				return errRet(&ParseError{
+					CharOffset: offset,
+					Phase:      PhaseOptions,
+					Message:    rfErr.Error(),
+					RuleText:   ruleText,
+				})
+			}
 			options["rate_filter"] = part
 		} else if strings.HasPrefix(part, "detection_filter:") {
 			// Validate detection_filter syntax
@@ -1819,8 +1877,7 @@ func (p *Parser) parseOptions(opts string, ruleText string) (RuleID, string, []C
 func (p *Parser) parsePCRE(part string) (PCREMatch, error) {
 	pcre := PCREMatch{}
 
-	re := regexp.MustCompile(`pcre:\s*"/(.+)"/?([imsxAEGRUBPHDMCS]*)"?`)
-	m := re.FindStringSubmatch(part)
+	m := pcreRe.FindStringSubmatch(part)
 	if len(m) < 2 {
 		return pcre, fmt.Errorf("malformed PCRE expression: %s", part)
 	}
@@ -1853,7 +1910,6 @@ func (p *Parser) parseContentMatch(part string) (ContentMatch, error) {
 
 	// Hex content: content:"|48 61|" or content:|48 61|
 	// The hex delimiter is |, can be wrapped in quotes
-	hexRe := regexp.MustCompile(`content:\s*(?:!)?["']?\|([^|]+)\|["']?`)
 	h := hexRe.FindStringSubmatch(part)
 	if len(h) > 1 {
 		raw, err := decodeContent("|" + h[1] + "|")
@@ -1867,8 +1923,7 @@ func (p *Parser) parseContentMatch(part string) (ContentMatch, error) {
 
 	// Updated regex to properly handle negation prefix
 	// content:!"value" or content:"value" or content:!value
-	strRe := regexp.MustCompile(`content:\s*(?:!)?["']?([^"';]+)["']?`)
-	m := strRe.FindStringSubmatch(part)
+	m := contentRe.FindStringSubmatch(part)
 	if len(m) > 1 {
 		content := m[1]
 		// If negation was detected but content doesn't start with !, it means
@@ -1899,6 +1954,9 @@ func (p *Parser) parseContentMatch(part string) (ContentMatch, error) {
 
 func decodeContent(s string) ([]byte, error) {
 	if strings.HasPrefix(s, "|") && strings.HasSuffix(s, "|") {
+		if len(s) < 2 {
+			return nil, fmt.Errorf("malformed hex content: %s", s)
+		}
 		hexStr := strings.ReplaceAll(s[1:len(s)-1], " ", "")
 		hexStr = strings.ReplaceAll(hexStr, "\n", "")
 		if len(hexStr)%2 != 0 {
@@ -2082,6 +2140,11 @@ func (p *Parser) parseFlowbits(part string) (Flowbit, error) {
 
 	op := strings.TrimSpace(fields[0])
 	name := strings.TrimSpace(fields[1])
+
+	// Validate name is not empty
+	if name == "" {
+		return fb, fmt.Errorf("flowbits name cannot be empty")
+	}
 
 	switch op {
 	case "set":
@@ -2277,16 +2340,22 @@ func (p *Parser) parseDSize(part string) (*DSizeOption, error) {
 	// Check for range format <n><><m>
 	if strings.Contains(content, "<>") {
 		ds.IsRange = true
-		parts := strings.Split(content, "<>")
-		if len(parts) == 2 {
-			if _, err := fmt.Sscanf(parts[0], "%d", &ds.Min); err != nil {
-				return &DSizeOption{}, fmt.Errorf("invalid dsize min: %s", parts[0])
-			}
-			if _, err := fmt.Sscanf(parts[1], "%d", &ds.Max); err != nil {
-				return &DSizeOption{}, fmt.Errorf("invalid dsize max: %s", parts[1])
-			}
-			ds.Op = "<>"
+		parts := strings.SplitN(content, "<>", 2)
+		if len(parts) != 2 {
+			return &DSizeOption{}, fmt.Errorf("malformed dsize range: %s", content)
 		}
+		minStr := strings.TrimSpace(parts[0])
+		maxStr := strings.TrimSpace(parts[1])
+		if minStr == "" || maxStr == "" {
+			return &DSizeOption{}, fmt.Errorf("malformed dsize range: %s", content)
+		}
+		if _, err := fmt.Sscanf(minStr, "%d", &ds.Min); err != nil {
+			return &DSizeOption{}, fmt.Errorf("invalid dsize min: %s", minStr)
+		}
+		if _, err := fmt.Sscanf(maxStr, "%d", &ds.Max); err != nil {
+			return &DSizeOption{}, fmt.Errorf("invalid dsize max: %s", maxStr)
+		}
+		ds.Op = "<>"
 	} else if strings.HasPrefix(content, ">") {
 		ds.Op = ">"
 		if _, err := fmt.Sscanf(strings.TrimPrefix(content, ">"), "%d", &ds.Min); err != nil {

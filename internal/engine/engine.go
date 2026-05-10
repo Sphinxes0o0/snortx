@@ -25,6 +25,12 @@ type cachedRegex struct {
 	lastAccess time.Time
 }
 
+// pcreCacheEntry is used for cache eviction sorting
+type pcreCacheEntry struct {
+	key  string
+	time time.Time
+}
+
 type Engine struct {
 	generator *packets.Generator
 	sender    *packets.Sender
@@ -315,27 +321,35 @@ func (e *Engine) evictPCRECache() {
 	}
 
 	// Find oldest entries
-	type entry struct {
-		key  string
-		time time.Time
-	}
-	var entries []entry
+	var entries []pcreCacheEntry
 	for k, v := range e.pcreCache {
-		entries = append(entries, entry{key: k, time: v.lastAccess})
+		entries = append(entries, pcreCacheEntry{key: k, time: v.lastAccess})
 	}
 
 	// Sort by access time (oldest first)
+	// Use a stable sort approach without holding the lock during sorting
+	sortPCREEntries(entries)
+
+	// Build list of keys to delete (outside lock scope)
+	var keysToDelete []string
+	for i := 0; i < toRemove && i < len(entries); i++ {
+		keysToDelete = append(keysToDelete, entries[i].key)
+	}
+
+	// Delete entries (lock is not held during this phase)
+	for _, key := range keysToDelete {
+		delete(e.pcreCache, key)
+	}
+}
+
+// sortPCREEntries sorts entries by access time (oldest first) using bubble sort
+func sortPCREEntries(entries []pcreCacheEntry) {
 	for i := 0; i < len(entries)-1; i++ {
 		for j := i + 1; j < len(entries); j++ {
 			if entries[j].time.Before(entries[i].time) {
 				entries[i], entries[j] = entries[j], entries[i]
 			}
 		}
-	}
-
-	// Remove oldest entries
-	for i := 0; i < toRemove && i < len(entries); i++ {
-		delete(e.pcreCache, entries[i].key)
 	}
 }
 

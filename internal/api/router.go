@@ -2,6 +2,7 @@ package api
 
 import (
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -192,7 +193,15 @@ func (m *middlewares) rateLimitMiddleware(next http.Handler) http.Handler {
 func getClientIP(r *http.Request) string {
 	forwarded := r.Header.Get("X-Forwarded-For")
 	if forwarded != "" {
-		return strings.Split(forwarded, ",")[0]
+		// X-Forwarded-For can contain multiple IPs: client, proxy1, proxy2
+		// We only use it if it contains a valid IP address
+		ip := strings.Split(forwarded, ",")[0]
+		ip = strings.TrimSpace(ip)
+		// Validate that the extracted IP is actually a valid IP
+		if net.ParseIP(ip) != nil {
+			return ip
+		}
+		// Invalid IP in X-Forwarded-For, fall back to RemoteAddr
 	}
 	addr := r.RemoteAddr
 	if idx := strings.LastIndex(addr, ":"); idx > 0 {
