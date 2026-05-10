@@ -2,10 +2,10 @@ package reports
 
 import (
 	"fmt"
+	"html"
 	"html/template"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -56,17 +56,18 @@ func (g *HTMLGenerator) Generate(result *TestRunResult) (string, error) {
 		return "", fmt.Errorf("failed to create output dir: %w", err)
 	}
 
-	result.CompletedAt = time.Now()
+	resultCopy := *result
+	resultCopy.CompletedAt = time.Now()
 
 	successRate := "0%"
-	if result.TotalRules > 0 {
-		successRate = fmt.Sprintf("%.1f%%", float64(result.SuccessCount)/float64(result.TotalRules)*100)
+	if resultCopy.TotalRules > 0 {
+		successRate = fmt.Sprintf("%.1f%%", float64(resultCopy.SuccessCount)/float64(resultCopy.TotalRules)*100)
 	}
 
 	// Protocol breakdown
 	protoStatsMap := make(map[string]map[string]int)
 	protoList := []string{}
-	for _, r := range result.Results {
+	for _, r := range resultCopy.Results {
 		if _, ok := protoStatsMap[r.Protocol]; !ok {
 			protoStatsMap[r.Protocol] = map[string]int{"success": 0, "failed": 0}
 			protoList = append(protoList, r.Protocol)
@@ -98,8 +99,8 @@ func (g *HTMLGenerator) Generate(result *TestRunResult) (string, error) {
 	}
 
 	// Build rows
-	rows := make([]htmlRowData, 0, len(result.Results))
-	for _, r := range result.Results {
+	rows := make([]htmlRowData, 0, len(resultCopy.Results))
+	for _, r := range resultCopy.Results {
 		pcapBase := ""
 		if r.PCAPPath != "" {
 			pcapBase = filepath.Base(r.PCAPPath)
@@ -108,29 +109,29 @@ func (g *HTMLGenerator) Generate(result *TestRunResult) (string, error) {
 			Protocol:    r.Protocol,
 			Status:      r.Status,
 			RuleSID:     r.RuleSID,
-			RuleMsg:     r.RuleMsg,
+			RuleMsg:     html.EscapeString(r.RuleMsg),
 			PacketsSent: r.PacketsSent,
-			Error:       r.Error,
+			Error:       html.EscapeString(r.Error),
 			PCAPBase:    pcapBase,
 			PCAPPath:    r.PCAPPath,
 		})
 	}
 
 	data := htmlData{
-		CompletedAt:  result.CompletedAt.Format(time.RFC3339),
-		TotalRules:   result.TotalRules,
-		SuccessCount: result.SuccessCount,
-		FailureCount: result.FailureCount,
+		CompletedAt:  resultCopy.CompletedAt.Format(time.RFC3339),
+		TotalRules:   resultCopy.TotalRules,
+		SuccessCount: resultCopy.SuccessCount,
+		FailureCount: resultCopy.FailureCount,
 		SuccessRate:  successRate,
 		ProtoStats:   protoStats,
 		ProtoOptions: protoList,
 		Rows:         rows,
-		TestRunID:    result.TestRunID,
-		TotalRows:    result.TotalRules,
+		TestRunID:    resultCopy.TestRunID,
+		TotalRows:    resultCopy.TotalRules,
 	}
 
 	tmpl := template.Must(template.New("report").Parse(htmlTemplate))
-	fname := filepath.Join(g.OutputDir, fmt.Sprintf("report_%s.html", result.TestRunID))
+	fname := filepath.Join(g.OutputDir, fmt.Sprintf("report_%s.html", resultCopy.TestRunID))
 	f, err := os.Create(fname)
 	if err != nil {
 		return "", fmt.Errorf("failed to create file: %w", err)
@@ -142,14 +143,6 @@ func (g *HTMLGenerator) Generate(result *TestRunResult) (string, error) {
 	}
 
 	return fname, nil
-}
-
-func basename(path string) string {
-	idx := strings.LastIndex(path, "/")
-	if idx < 0 {
-		return path
-	}
-	return path[idx+1:]
 }
 
 const htmlTemplate = `<!DOCTYPE html>

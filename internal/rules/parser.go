@@ -348,17 +348,23 @@ func (p *Parser) parseOptions(opts string, ruleText string) (RuleID, string, []C
 	}
 
 	parts := strings.Split(opts, ";")
-	for partIdx, part := range parts {
+	// Find where the options start in the original rule text (after the opening parenthesis)
+	optionsStart := strings.Index(ruleText, "(")
+	if optionsStart < 0 {
+		optionsStart = 0
+	} else {
+		optionsStart++ // Skip the '(' itself
+	}
+	optPos := 0 // Track position within the options string
+
+	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
 
 		// Calculate character offset in original rule
-		offset := strings.Index(ruleText, part)
-		if offset < 0 {
-			offset = 0
-		}
+		offset := optionsStart + optPos
 
 		if strings.HasPrefix(part, "content:") {
 			cm, cmErr := p.parseContentMatch(part)
@@ -1803,7 +1809,8 @@ func (p *Parser) parseOptions(opts string, ruleText string) (RuleID, string, []C
 			}
 		}
 
-		_ = partIdx // avoid unused variable warning
+		// Update position after processing this part (including the semicolon separator)
+		optPos += len(part) + 1 // +1 for the semicolon that was split on
 	}
 
 	return ruleID, msg, contents, pcreMatches, byteTests, byteJumps, flow, flowbits, noAlert, options, vlanID, nil
@@ -1849,7 +1856,11 @@ func (p *Parser) parseContentMatch(part string) (ContentMatch, error) {
 	hexRe := regexp.MustCompile(`content:\s*(?:!)?["']?\|([^|]+)\|["']?`)
 	h := hexRe.FindStringSubmatch(part)
 	if len(h) > 1 {
-		cm.Raw = decodeContent("|" + h[1] + "|")
+		raw, err := decodeContent("|" + h[1] + "|")
+		if err != nil {
+			return cm, fmt.Errorf("invalid hex content: %s", err)
+		}
+		cm.Raw = raw
 		cm.IsHex = true
 		return cm, nil
 	}
@@ -1875,14 +1886,18 @@ func (p *Parser) parseContentMatch(part string) (ContentMatch, error) {
 		if content == "" && cm.IsNegated {
 			return cm, fmt.Errorf("content match cannot be empty")
 		}
-		cm.Raw = decodeContent(content)
+		raw, err := decodeContent(content)
+		if err != nil {
+			return cm, fmt.Errorf("invalid content: %s", err)
+		}
+		cm.Raw = raw
 		return cm, nil
 	}
 
 	return cm, fmt.Errorf("malformed content match: %s", part)
 }
 
-func decodeContent(s string) []byte {
+func decodeContent(s string) ([]byte, error) {
 	if strings.HasPrefix(s, "|") && strings.HasSuffix(s, "|") {
 		hexStr := strings.ReplaceAll(s[1:len(s)-1], " ", "")
 		hexStr = strings.ReplaceAll(hexStr, "\n", "")
@@ -1891,12 +1906,15 @@ func decodeContent(s string) []byte {
 		}
 		result := make([]byte, len(hexStr)/2)
 		for i := 0; i < len(hexStr); i += 2 {
-			b, _ := strconv.ParseUint(hexStr[i:i+2], 16, 8)
+			b, err := strconv.ParseUint(hexStr[i:i+2], 16, 8)
+			if err != nil {
+				return nil, fmt.Errorf("invalid hex byte at position %d: %s", i, hexStr[i:i+2])
+			}
 			result[i/2] = byte(b)
 		}
-		return result
+		return result, nil
 	}
-	return []byte(s)
+	return []byte(s), nil
 }
 
 // parseByteTest parses byte_test option
@@ -2114,9 +2132,13 @@ func (p *Parser) parseThreshold(part string) (*Threshold, error) {
 		case "track":
 			th.TrackBy = val
 		case "count":
-			fmt.Sscanf(val, "%d", &th.Count)
+			if _, err := fmt.Sscanf(val, "%d", &th.Count); err != nil {
+				return nil, fmt.Errorf("invalid threshold count: %s", val)
+			}
 		case "seconds":
-			fmt.Sscanf(val, "%d", &th.Seconds)
+			if _, err := fmt.Sscanf(val, "%d", &th.Seconds); err != nil {
+				return nil, fmt.Errorf("invalid threshold seconds: %s", val)
+			}
 		}
 	}
 
@@ -2166,9 +2188,13 @@ func (p *Parser) parseRateFilter(part string) (*RateFilter, error) {
 		case "track":
 			rf.TrackBy = val
 		case "count":
-			fmt.Sscanf(val, "%d", &rf.Count)
+			if _, err := fmt.Sscanf(val, "%d", &rf.Count); err != nil {
+				return nil, fmt.Errorf("invalid rate_filter count: %s", val)
+			}
 		case "seconds":
-			fmt.Sscanf(val, "%d", &rf.Seconds)
+			if _, err := fmt.Sscanf(val, "%d", &rf.Seconds); err != nil {
+				return nil, fmt.Errorf("invalid rate_filter seconds: %s", val)
+			}
 		case "new_action":
 			rf.Action = RateFilterAction(val)
 		}
@@ -2215,9 +2241,13 @@ func (p *Parser) parseDetectionFilter(part string) (*DetectionFilter, error) {
 		case "track":
 			df.TrackBy = val
 		case "count":
-			fmt.Sscanf(val, "%d", &df.Count)
+			if _, err := fmt.Sscanf(val, "%d", &df.Count); err != nil {
+				return nil, fmt.Errorf("invalid detection_filter count: %s", val)
+			}
 		case "seconds":
-			fmt.Sscanf(val, "%d", &df.Seconds)
+			if _, err := fmt.Sscanf(val, "%d", &df.Seconds); err != nil {
+				return nil, fmt.Errorf("invalid detection_filter seconds: %s", val)
+			}
 		}
 	}
 
@@ -2249,24 +2279,36 @@ func (p *Parser) parseDSize(part string) (*DSizeOption, error) {
 		ds.IsRange = true
 		parts := strings.Split(content, "<>")
 		if len(parts) == 2 {
-			fmt.Sscanf(parts[0], "%d", &ds.Min)
-			fmt.Sscanf(parts[1], "%d", &ds.Max)
+			if _, err := fmt.Sscanf(parts[0], "%d", &ds.Min); err != nil {
+				return &DSizeOption{}, fmt.Errorf("invalid dsize min: %s", parts[0])
+			}
+			if _, err := fmt.Sscanf(parts[1], "%d", &ds.Max); err != nil {
+				return &DSizeOption{}, fmt.Errorf("invalid dsize max: %s", parts[1])
+			}
 			ds.Op = "<>"
 		}
 	} else if strings.HasPrefix(content, ">") {
 		ds.Op = ">"
-		fmt.Sscanf(strings.TrimPrefix(content, ">"), "%d", &ds.Min)
+		if _, err := fmt.Sscanf(strings.TrimPrefix(content, ">"), "%d", &ds.Min); err != nil {
+			return &DSizeOption{}, fmt.Errorf("invalid dsize min: %s", content[1:])
+		}
 	} else if strings.HasPrefix(content, "<") {
 		ds.Op = "<"
-		fmt.Sscanf(strings.TrimPrefix(content, "<"), "%d", &ds.Max)
+		if _, err := fmt.Sscanf(strings.TrimPrefix(content, "<"), "%d", &ds.Max); err != nil {
+			return &DSizeOption{}, fmt.Errorf("invalid dsize max: %s", content[1:])
+		}
 	} else if strings.HasPrefix(content, "=") {
 		ds.Op = "="
-		fmt.Sscanf(strings.TrimPrefix(content, "="), "%d", &ds.Min)
+		if _, err := fmt.Sscanf(strings.TrimPrefix(content, "="), "%d", &ds.Min); err != nil {
+			return &DSizeOption{}, fmt.Errorf("invalid dsize value: %s", content[1:])
+		}
 		ds.Max = ds.Min
 	} else {
 		// Simple number
 		ds.Op = "="
-		fmt.Sscanf(content, "%d", &ds.Min)
+		if _, err := fmt.Sscanf(content, "%d", &ds.Min); err != nil {
+			return &DSizeOption{}, fmt.Errorf("invalid dsize value: %s", content)
+		}
 		ds.Max = ds.Min
 	}
 

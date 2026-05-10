@@ -147,15 +147,28 @@ func (s *Scanner) ScanHostTCP(target string, ports []int) (*HostResult, error) {
 	jobs := make(chan int, s.cfg.Workers*2)
 	results := make(chan PortResult, s.cfg.Workers*2)
 
-	var limiter <-chan time.Time
+	var limiter chan struct{}
 	var limiterTicker *time.Ticker
 	if s.cfg.Rate > 0 {
+		limiter = make(chan struct{}, s.cfg.Rate)
+		// Fill the bucket initially
+		for i := 0; i < s.cfg.Rate; i++ {
+			limiter <- struct{}{}
+		}
+		// Refill at the specified rate
 		interval := time.Second / time.Duration(s.cfg.Rate)
 		if interval <= 0 {
 			interval = time.Nanosecond
 		}
 		limiterTicker = time.NewTicker(interval)
-		limiter = limiterTicker.C
+		go func() {
+			for range limiterTicker.C {
+				select {
+				case limiter <- struct{}{}:
+				default:
+				}
+			}
+		}()
 	}
 
 	var wg sync.WaitGroup
@@ -244,10 +257,14 @@ func (s *Scanner) scanTCPPort(target string, port int) PortResult {
 }
 
 func detectServiceBanner(conn net.Conn, port int, timeout time.Duration) string {
-	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return ""
+	}
 	switch port {
 	case 80, 8080, 8000, 8888:
-		_, _ = conn.Write([]byte("HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n"))
+		if _, err := conn.Write([]byte("HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n")); err != nil {
+			return ""
+		}
 	}
 
 	buf := make([]byte, 256)

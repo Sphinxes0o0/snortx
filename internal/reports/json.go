@@ -25,9 +25,10 @@ func (g *JSONGenerator) Generate(result *TestRunResult) (string, error) {
 		return "", fmt.Errorf("failed to create output dir: %w", err)
 	}
 
-	result.CompletedAt = time.Now()
+	resultCopy := *result
+	resultCopy.CompletedAt = time.Now()
 
-	data, err := json.MarshalIndent(result, "", "  ")
+	data, err := json.MarshalIndent(&resultCopy, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal result: %w", err)
 	}

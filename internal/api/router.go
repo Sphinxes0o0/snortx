@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -64,8 +65,22 @@ func NewRouter(h *Handlers, auth AuthConfig, cors []string, rateLimit int) *mux.
 
 func (m *middlewares) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
+		start := time.Now()
+		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		next.ServeHTTP(rw, r)
+		latency := time.Since(start)
+		log.Printf("%s %s %d %v", r.Method, r.URL.Path, rw.statusCode, latency)
 	})
+}
+
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
 }
 
 func (m *middlewares) recoveryMiddleware(next http.Handler) http.Handler {
@@ -140,18 +155,16 @@ func (m *middlewares) rateLimitMiddleware(next http.Handler) http.Handler {
 
 		now := time.Now()
 
-		// Clean up expired entries periodically
-		if len(rateLimitKeys) > 1000 {
-			newKeys := make([]string, 0, len(rateLimitKeys))
-			for _, k := range rateLimitKeys {
-				if entry, ok := rateLimitMap[k]; ok && now.Sub(entry.lastReset) <= time.Second {
-					newKeys = append(newKeys, k)
-				} else {
-					delete(rateLimitMap, k)
-				}
+		// Clean up expired entries from rateLimitKeys on every add to prevent memory leak
+		newKeys := make([]string, 0, len(rateLimitKeys))
+		for _, k := range rateLimitKeys {
+			if entry, ok := rateLimitMap[k]; ok && now.Sub(entry.lastReset) <= time.Second {
+				newKeys = append(newKeys, k)
+			} else {
+				delete(rateLimitMap, k)
 			}
-			rateLimitKeys = newKeys
 		}
+		rateLimitKeys = newKeys
 
 		entry, exists := rateLimitMap[ip]
 

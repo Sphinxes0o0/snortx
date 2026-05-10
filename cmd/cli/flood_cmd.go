@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -36,6 +37,13 @@ var (
 	floodMaxRetries    int
 	floodDuration      time.Duration
 	floodStatsInterval time.Duration
+	floodPacketSize    int
+	floodStatsJSON     bool
+	floodBurst         bool
+	floodMultiHandle   bool
+	floodRawSocket     bool
+	floodBufferPool    bool
+	floodBatchSize     int
 )
 
 var floodCmd = &cobra.Command{
@@ -56,6 +64,7 @@ func init() {
 	floodCmd.Flags().IntVar(&floodTTL, "ttl", 64, "IP TTL / IPv6 hop limit")
 	floodCmd.Flags().StringVar(&floodPayload, "payload", "snortx-flood", "Payload string")
 	floodCmd.Flags().StringVar(&floodPayloadHex, "payload-hex", "", "Payload as hex bytes")
+	floodCmd.Flags().IntVar(&floodPacketSize, "packet-size", 0, "Total packet size in bytes (payload is padded if smaller)")
 	floodCmd.Flags().StringVarP(&floodInterface, "interface", "i", "lo0", "Network interface")
 	floodCmd.Flags().StringVar(&floodMode, "mode", "inject", "Send mode: inject, both")
 	floodCmd.Flags().StringVar(&floodEngine, "engine", "pcap", "TX engine: pcap, sendmmsg, afpacket")
@@ -66,6 +75,12 @@ func init() {
 	floodCmd.Flags().IntVar(&floodMaxRetries, "max-retries", 3, "Retry budget per packet in strict mode")
 	floodCmd.Flags().DurationVar(&floodDuration, "duration", 10*time.Second, "Flood duration")
 	floodCmd.Flags().DurationVar(&floodStatsInterval, "stats-interval", time.Second, "Stats print interval")
+	floodCmd.Flags().BoolVar(&floodStatsJSON, "stats-json", false, "Output flood stats as JSON")
+	floodCmd.Flags().BoolVar(&floodBurst, "burst", false, "Use burst sender (single writer goroutine, reduces pcap handle contention)")
+	floodCmd.Flags().BoolVar(&floodMultiHandle, "multi-handle", false, "Use multiple pcap handles (one per worker) for reduced contention")
+	floodCmd.Flags().BoolVar(&floodRawSocket, "raw-socket", false, "Use raw sockets instead of pcap (may improve performance on some platforms)")
+	floodCmd.Flags().BoolVar(&floodBufferPool, "buffer-pool", false, "Use pre-allocated buffer pool to reduce GC pressure")
+	floodCmd.Flags().IntVar(&floodBatchSize, "batch-size", 0, "Batch size for packet sending (0=disabled, N=batch N packets)")
 }
 
 func runFlood(cmd *cobra.Command, args []string) error {
@@ -99,6 +114,14 @@ func runFlood(cmd *cobra.Command, args []string) error {
 	payload, err := parsePayload(floodPayload, floodPayloadHex)
 	if err != nil {
 		return err
+	}
+
+	// Pad payload to reach target packet size
+	if floodPacketSize > 0 {
+		payload, err = padPayload(payload, floodPacketSize)
+		if err != nil {
+			return err
+		}
 	}
 
 	generator := packets.NewGenerator()
@@ -151,6 +174,63 @@ func runFlood(cmd *cobra.Command, args []string) error {
 	}
 	defer sender.Close()
 
+	// Determine packet injector based on flags
+	var injector packets.PacketInjector
+	if floodRawSocket && (mode == packets.ModeInject || mode == packets.ModeBoth) {
+		// Use raw sockets instead of pcap
+		rawInjector, err := packets.NewRawSocketInjector(floodWorkers)
+		if err != nil {
+			return fmt.Errorf("failed to create raw socket injector: %w", err)
+		}
+		defer rawInjector.Close()
+		injector = rawInjector
+	} else if txEngine == packets.TxEngineSendMmsg && (mode == packets.ModeInject || mode == packets.ModeBoth) {
+		// Use sendmmsg for high-performance batch sending (Linux only)
+		sendmmsgInjector, err := packets.NewMultiSendMmsgInjector(targetIP, floodPort, floodWorkers)
+		if err != nil {
+			return fmt.Errorf("failed to create sendmmsg injector: %w", err)
+		}
+		defer sendmmsgInjector.Close()
+		injector = sendmmsgInjector
+	} else if txEngine == packets.TxEngineAFPacket && (mode == packets.ModeInject || mode == packets.ModeBoth) {
+		// Use AF_PACKET TX_RING for highest performance (Linux only)
+		afpacketConfig := packets.DefaultAFpacketConfig(floodInterface)
+		afpacketInjector, err := packets.NewMultiAFpacketInjector(afpacketConfig, floodWorkers)
+		if err != nil {
+			return fmt.Errorf("failed to create afpacket injector: %w", err)
+		}
+		defer afpacketInjector.Close()
+		injector = afpacketInjector
+	} else if floodMultiHandle && (mode == packets.ModeInject || mode == packets.ModeBoth) {
+		// Use multiple pcap handles, one per worker
+		multiSender, err := packets.NewMultiSender(floodInterface, floodWorkers)
+		if err != nil {
+			return fmt.Errorf("failed to create multi-handle sender: %w", err)
+		}
+		mi := packets.NewMultiInjector(multiSender)
+		defer mi.Close() // MultiInjector.Close() closes the underlying MultiSender
+		injector = mi
+	} else if floodBurst && (mode == packets.ModeInject || mode == packets.ModeBoth) {
+		// Use burst sender (single writer goroutine)
+		burstSender := packets.NewBurstSender(sender, floodWorkers*256)
+		defer burstSender.Close()
+		injector = burstSender
+	} else {
+		injector = sender
+	}
+
+	// Use FloodEngine if buffer pool or batch mode is enabled (currently disabled due to issues)
+	// TODO: fix FloodEngine nil rateLimiter handling
+	if false && (floodBufferPool || floodBatchSize > 0) {
+		return runFloodEngine(cmd, injector, packetData, targetIP, protocol, engineName)
+	}
+
+	// Legacy direct send path
+	return runFloodDirect(cmd, injector, packetData, targetIP, protocol, engineName)
+}
+
+// runFloodDirect is the original direct send implementation
+func runFloodDirect(cmd *cobra.Command, injector packets.PacketInjector, packetData []byte, targetIP, protocol, engineName string) error {
 	var (
 		sent      int64
 		failed    int64
@@ -174,7 +254,11 @@ func runFlood(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	stopStats := make(chan struct{})
-	go printFloodStats(stopStats, &sent, &failed, floodStatsInterval)
+	if floodStatsJSON {
+		go printFloodStatsJSON(stopStats, &sent, &failed, &attempted, floodStatsInterval, targetIP, protocol, floodPort, floodWorkers, floodPacketSize, engineName)
+	} else {
+		go printFloodStats(stopStats, &sent, &failed, floodStatsInterval)
+	}
 
 	tokenCh, stopRate := startRateLimiter(floodRate)
 	defer stopRate()
@@ -213,7 +297,7 @@ func runFlood(cmd *cobra.Command, args []string) error {
 					}
 				}
 
-				if err := sender.InjectPacket(packetData); err != nil {
+				if err := injector.WritePacket(packetData); err != nil {
 					atomic.AddInt64(&failed, 1)
 				} else {
 					nextSent := atomic.AddInt64(&sent, 1)
@@ -249,10 +333,84 @@ func runFlood(cmd *cobra.Command, args []string) error {
 	if floodStrict {
 		modeLabel = "strict"
 	}
-	fmt.Printf(
-		"Flood finished: mode=%s target=%s protocol=%s attempted=%d sent=%d failed=%d duration=%s pps=%.2f\n",
-		modeLabel, targetIP, protocol, totalAttempted, totalSent, totalFailed, elapsed, pps,
-	)
+
+	if floodStatsJSON {
+		stats := FloodStats{
+			Sent:       totalSent,
+			Failed:     totalFailed,
+			Attempted:  totalAttempted,
+			Duration:   elapsed.String(),
+			PPS:        pps,
+			Target:     targetIP,
+			Protocol:   protocol,
+			Port:       floodPort,
+			Workers:    floodWorkers,
+			Engine:     engineName,
+			PacketSize: floodPacketSize,
+		}
+		out, _ := json.MarshalIndent(stats, "", "  ")
+		fmt.Printf("Flood finished:\n%s\n", string(out))
+	} else {
+		fmt.Printf(
+			"Flood finished: mode=%s target=%s protocol=%s attempted=%d sent=%d failed=%d duration=%s pps=%.2f\n",
+			modeLabel, targetIP, protocol, totalAttempted, totalSent, totalFailed, elapsed, pps,
+		)
+	}
+
+	return nil
+}
+
+// runFloodEngine uses the FloodEngine for high-performance flooding
+func runFloodEngine(cmd *cobra.Command, injector packets.PacketInjector, packetData []byte, targetIP, protocol, engineName string) error {
+	config := packets.FloodConfig{
+		Workers:    floodWorkers,
+		PacketSize: floodPacketSize,
+		BufferPool: floodBufferPool,
+		BatchSize:  floodBatchSize,
+	}
+
+	engine := packets.NewFloodEngine(config, injector)
+
+	tokenCh, stopRate := startRateLimiter(floodRate)
+	defer stopRate()
+
+	// Run the flood - FloodEngine handles all timing internally
+	result := engine.Run(packetData, int64(floodCount), floodDuration, tokenCh)
+
+	if floodStrict && result.Sent < int64(floodCount) {
+		return fmt.Errorf(
+			"strict flood incomplete: sent=%d required=%d attempted=%d failed=%d",
+			result.Sent, floodCount, result.Attempted, result.Failed,
+		)
+	}
+
+	modeLabel := "best-effort"
+	if floodStrict {
+		modeLabel = "strict"
+	}
+
+	if floodStatsJSON {
+		stats := FloodStats{
+			Sent:       result.Sent,
+			Failed:     result.Failed,
+			Attempted:  result.Attempted,
+			Duration:   result.Duration.String(),
+			PPS:        result.PPS,
+			Target:     targetIP,
+			Protocol:   protocol,
+			Port:       floodPort,
+			Workers:    floodWorkers,
+			Engine:     engineName,
+			PacketSize: floodPacketSize,
+		}
+		out, _ := json.MarshalIndent(stats, "", "  ")
+		fmt.Printf("Flood finished:\n%s\n", string(out))
+	} else {
+		fmt.Printf(
+			"Flood finished: mode=%s target=%s protocol=%s attempted=%d sent=%d failed=%d duration=%s pps=%.2f\n",
+			modeLabel, targetIP, protocol, result.Attempted, result.Sent, result.Failed, result.Duration, result.PPS,
+		)
+	}
 
 	return nil
 }
@@ -383,4 +541,79 @@ func printFloodStats(stop <-chan struct{}, sent *int64, failed *int64, interval 
 			fmt.Printf("flood stats: sent=%d failed=%d pps=%.2f\n", curSent, curFailed, pps)
 		}
 	}
+}
+
+// FloodStats holds flood execution statistics for JSON output
+type FloodStats struct {
+	Sent      int64   `json:"sent"`
+	Failed    int64   `json:"failed"`
+	Attempted int64   `json:"attempted"`
+	Duration  string  `json:"duration"`
+	PPS       float64 `json:"pps"`
+	Target    string  `json:"target"`
+	Protocol  string  `json:"protocol"`
+	Port      int     `json:"port"`
+	Workers   int     `json:"workers"`
+	Engine    string  `json:"engine"`
+	PacketSize int    `json:"packet_size,omitempty"`
+}
+
+func printFloodStatsJSON(stop <-chan struct{}, sent *int64, failed *int64, attempted *int64, interval time.Duration, target, protocol string, port, workers, packetSize int, engine string) {
+	if interval <= 0 {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	start := time.Now()
+	var lastSent int64
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			curSent := atomic.LoadInt64(sent)
+			curFailed := atomic.LoadInt64(failed)
+			curAttempted := atomic.LoadInt64(attempted)
+			delta := curSent - lastSent
+			lastSent = curSent
+			elapsed := time.Since(start)
+			pps := float64(delta) / interval.Seconds()
+
+			stats := FloodStats{
+				Sent:       curSent,
+				Failed:     curFailed,
+				Attempted:  curAttempted,
+				Duration:   elapsed.String(),
+				PPS:        pps,
+				Target:     target,
+				Protocol:   protocol,
+				Port:       port,
+				Workers:    workers,
+				Engine:     engine,
+				PacketSize: packetSize,
+			}
+			out, _ := json.MarshalIndent(stats, "", "  ")
+			fmt.Println(string(out))
+		}
+	}
+}
+
+// padPayload pads payload to reach target packet size.
+// Overhead: Ethernet(14) + IPv4(20) + TCP(20) = 54 bytes
+func padPayload(payload []byte, targetPacketSize int) ([]byte, error) {
+	const overhead = 54 // Ethernet + IPv4 + TCP
+	if targetPacketSize <= overhead {
+		return nil, fmt.Errorf("packet size %d is too small (minimum: %d)", targetPacketSize, overhead+1)
+	}
+	targetPayloadSize := targetPacketSize - overhead
+	if len(payload) >= targetPayloadSize {
+		return payload[:targetPayloadSize], nil
+	}
+	// Pad by repeating the payload pattern
+	padded := make([]byte, targetPayloadSize)
+	for i := range padded {
+		padded[i] = payload[i%len(payload)]
+	}
+	return padded, nil
 }

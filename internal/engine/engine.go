@@ -135,8 +135,12 @@ func (e *Engine) worker(id int) {
 func (e *Engine) processRule(rule *rules.ParsedRule) {
 	start := time.Now()
 
-	// Check flowbit conditions before processing
-	if !e.checkFlowbits(rule) {
+	// Phase 1: Check flowbit conditions with RLock
+	e.flowbitMu.RLock()
+	flowbitOK := e.checkFlowbits(rule)
+	e.flowbitMu.RUnlock()
+
+	if !flowbitOK {
 		e.resultChan <- &packets.SendResult{
 			RuleSID:  rule.RuleID.SID,
 			RuleMsg:  rule.Msg,
@@ -147,6 +151,7 @@ func (e *Engine) processRule(rule *rules.ParsedRule) {
 		return
 	}
 
+	// Phase 2: Generate packets (no flowbit access)
 	pkts, err := e.generator.Generate(rule)
 	if err != nil {
 		e.resultChan <- &packets.SendResult{
@@ -159,6 +164,7 @@ func (e *Engine) processRule(rule *rules.ParsedRule) {
 		return
 	}
 
+	// Phase 3: Validate PCRE if present (no flowbit access)
 	if len(rule.PCREMatches) > 0 {
 		payload := pkts[0].Data()
 		if err := e.validatePCRE(rule.PCREMatches, payload); err != nil {
@@ -173,6 +179,7 @@ func (e *Engine) processRule(rule *rules.ParsedRule) {
 		}
 	}
 
+	// Phase 4: Send and record (no flowbit access)
 	result := e.sender.SendAndRecord(rule, pkts)
 	result.RuleSID = rule.RuleID.SID
 	result.RuleMsg = rule.Msg
@@ -180,20 +187,23 @@ func (e *Engine) processRule(rule *rules.ParsedRule) {
 	result.PacketsGen = len(pkts)
 	result.Duration = time.Since(start)
 
-	// Set flowbits after successful match
-	e.setFlowbits(rule)
+	// Phase 5: Set flowbits after successful match
+	// Note: This is not fully atomic with the check above, but flowbit operations
+	// are typically used for rule chaining where some degree of non-atomicity is acceptable.
+	// For strict atomicity, a different locking scheme would be needed.
+	e.flowbitMu.Lock()
+	e.setFlowbitsInternal(rule)
+	e.flowbitMu.Unlock()
 
 	e.resultChan <- &result
 }
 
-// checkFlowbits checks if flowbit conditions are met for a rule
+// checkFlowbits checks if flowbit conditions are met for a rule.
+// Caller must hold flowbitMu.RLock().
 func (e *Engine) checkFlowbits(rule *rules.ParsedRule) bool {
 	if len(rule.Flowbits) == 0 {
 		return true
 	}
-
-	e.flowbitMu.RLock()
-	defer e.flowbitMu.RUnlock()
 
 	for _, fb := range rule.Flowbits {
 		switch fb.Op {
@@ -214,7 +224,11 @@ func (e *Engine) checkFlowbits(rule *rules.ParsedRule) bool {
 func (e *Engine) setFlowbits(rule *rules.ParsedRule) {
 	e.flowbitMu.Lock()
 	defer e.flowbitMu.Unlock()
+	e.setFlowbitsInternal(rule)
+}
 
+// setFlowbitsInternal modifies flowbit state. Caller must hold flowbitMu.
+func (e *Engine) setFlowbitsInternal(rule *rules.ParsedRule) {
 	for _, fb := range rule.Flowbits {
 		switch fb.Op {
 		case rules.FlowbitSet:

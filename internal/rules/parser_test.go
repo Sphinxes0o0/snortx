@@ -273,7 +273,11 @@ func TestDecodeContent(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result := decodeContent(tt.input)
+		result, err := decodeContent(tt.input)
+		if err != nil {
+			t.Errorf("decodeContent(%q) returned error: %v", tt.input, err)
+			continue
+		}
 		if string(result) != string(tt.expected) {
 			t.Errorf("decodeContent(%q) = %x, want %x", tt.input, result, tt.expected)
 		}

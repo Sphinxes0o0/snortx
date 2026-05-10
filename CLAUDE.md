@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-snortx is a Go-based tool that parses Snort rules, generates matching network packets, records them to PCAP files, and generates HTML/JSON test reports.
+snortx is a Go-based tool that parses Snort rules, generates matching network packets, records them to PCAP files, and generates HTML/JSON test reports. It also provides high-speed port scanning (nmap/masscan style) and packet flooding (hping3 style).
 
 ## Build Commands
 
@@ -46,6 +46,8 @@ Both return `*ParseResult` with partial results on error—parse errors in one r
 ./snortx batch rules1.rules rules2.rules
 ./snortx benchmark rules.rules --iterations 1000
 ./snortx diff rules1.rules rules2.rules
+./snortx scan 192.168.1.0/24 -p 22,80,443
+./snortx flood 10.0.0.10 -p 80 --duration 10s
 ./snortx-api serve --addr :8080
 ```
 
@@ -61,6 +63,8 @@ Both return `*ParseResult` with partial results on error—parse errors in one r
 | View parsed rules as JSON | `./snortx parse rules.rules --json` |
 | Test on specific interface | `./snortx test rules.rules -i eth0 --mode inject` |
 | Batch test multiple files | `./snortx batch rules1.rules rules2.rules -w 8` |
+| Port scan | `./snortx scan 192.168.1.0/24 -p 80,443 --workers 512` |
+| High-speed flood | `./snortx flood 10.0.0.10 -p 80 --workers 8 --rate 50000` |
 
 ## CLI Commands
 
@@ -73,6 +77,8 @@ Both return `*ParseResult` with partial results on error—parse errors in one r
 | `batch <files...>` | Run tests on multiple rule files in parallel |
 | `benchmark <file>` | Performance benchmark on rule file |
 | `diff <file1> <file2>` | Compare two rule files (shows [+SID] added, [-SID] removed, [~SID] modified by content) |
+| `scan <target>` | TCP port scanner (nmap/masscan style) |
+| `flood <target>` | High-speed packet flood (hping3 style) |
 | `repl` | Interactive REPL for rule testing (parse, generate, or enter rule directly) |
 | `serve` | Start the REST API server (snortx-api only) |
 | `version` | Show version information |
@@ -89,46 +95,76 @@ help             # Show help
 exit, quit        # Exit REPL
 ```
 
-## Key Flags
+### Scan Command
+
+TCP port scanner with configurable workers and rate limiting:
 
 ```bash
-# Test command
-./snortx test rules.rules -o ./output        # Output directory (default: ./output)
-./snortx test rules.rules -w 4               # Worker count (default: auto/NumCPU)
-./snortx test rules.rules -r json            # Report format: json, html, both (default: both)
-./snortx test rules.rules -i eth0            # Network interface (default: lo0)
-./snortx test rules.rules --mode pcap        # Send mode: pcap, inject, both
-# Note: --config is a global flag, place before or after subcommand
-
-# Parse command
-./snortx parse rules.rules --json            # Output rules as JSON
-
-# Lint command
-./snortx lint rules.rules                   # Validate rules (no packet generation)
-
-# Batch command
-./snortx batch rules1.rules rules2.rules -w 4  # Parallel workers (default: 4)
-
-# Benchmark command
-./snortx benchmark rules.rules -n 1000       # Iterations (default: 1000)
-./snortx benchmark rules.rules --warmup      # Run warmup before benchmark
-
-# Diff command
-./snortx diff rules1.rules rules2.rules     # Compare two rule files
-
-# Serve command
-./snortx-api serve --addr :8080             # Listen address
-./snortx-api serve --auth-token TOKEN       # Bearer token authentication
-./snortx-api serve --cors "*,example.com"    # CORS origins
-./snortx-api serve --rate-limit 100         # Requests per second (default: 100)
+./snortx scan 192.168.1.0/24 -p 80,443,8080          # Scan specific ports
+./snortx scan 192.168.1.0/24 --top-ports 20          # Top 20 common ports
+./snortx scan 192.168.1.0/24 -w 1024 --rate 2000      # High-speed scan
+./snortx scan 192.168.1.0/24 --service-detect         # Grab service banners
+./snortx scan 192.168.1.0/24 --json                   # JSON output
 ```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-p, --ports` | `22,80,443` | Ports/ranges to scan |
+| `--top-ports` | 0 | Use built-in top N ports (overrides --ports) |
+| `-w, --workers` | 512 | Parallel workers |
+| `--rate` | 0 | Packets/second (0=unlimited) |
+| `--timeout` | 1200ms | Per-port timeout |
+| `--service-detect` | false | Grab service banners on open ports |
+| `--json` | false | Output as JSON |
+| `--max-hosts` | 4096 | Max hosts from CIDR expansion |
+
+### Flood Command
+
+High-speed packet flooding with multiple TX engines:
+
+```bash
+./snortx flood 10.0.0.10 -p 80 --workers 8 --rate 50000   # TCP flood
+./snortx flood 10.0.0.10 -p 53 --protocol udp             # UDP flood
+./snortx flood 10.0.0.10 -p 80 --count 100000 --strict   # Strict mode (exact packet count)
+./snortx flood 10.0.0.10 -p 80 --tcp-flags syn            # SYN flood
+./snortx flood 10.0.0.10 -p 80 --engine pcap             # TX engine: pcap, sendmmsg, afpacket
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-p, --port` | 80 | Destination port |
+| `--protocol` | tcp | Protocol: tcp, udp, icmp |
+| `--src-ip` | auto | Source IP |
+| `--src-port` | 12345 | Source port |
+| `--tcp-flags` | syn | TCP flags (e.g., syn,ack,psh) |
+| `--ttl` | 64 | IP TTL / IPv6 hop limit |
+| `--payload` | `snortx-flood` | Payload string |
+| `--payload-hex` | | Payload as hex bytes |
+| `--packet-size` | 0 | Total packet size (payload padded if smaller) |
+| `-i, --interface` | lo0 | Network interface |
+| `--mode` | inject | Send mode: inject, both |
+| `--engine` | pcap | TX engine: pcap, sendmmsg, afpacket (Linux-only) |
+| `-w, --workers` | 4 | Parallel sender workers |
+| `--rate` | 0 | Packets/second (0=unlimited) |
+| `--count` | 0 | Target packet count |
+| `--strict` | false | Require exact count delivery |
+| `--max-retries` | 3 | Retry budget per packet in strict mode |
+| `--duration` | 10s | Flood duration |
+| `--stats-interval` | 1s | Stats print interval |
+| `--stats-json` | false | Output flood stats as JSON |
+| `--burst` | false | Use burst sender (single writer goroutine) |
+| `--multi-handle` | false | Use multiple pcap handles (one per worker) |
+| `--raw-socket` | false | Use raw sockets instead of pcap |
+| `--buffer-pool` | false | Use pre-allocated buffer pool |
+| `--batch-size` | 0 | Batch size for packet sending (0=disabled) |
 
 ## Architecture
 
 ```
 cmd/cli, cmd/api     → Entry points (cobra CLI, gorilla/mux HTTP)
 internal/rules       → Snort rule parsing (Parser), models (ParsedRule, ContentMatch, PCREMatch)
-internal/packets     → Packet generation (Generator) and PCAP writing (Sender)
+internal/packets     → Packet generation (Generator), PCAP writing (Sender), TX engine abstraction
+internal/scanner     → TCP port scanner (nmap/masscan style)
 internal/engine      → Worker pool: buffered channels for rules/results, PCRE regex caching
 internal/reports     → JSON and HTML report generation
 internal/api         → HTTP server with auth, CORS, rate limiting
@@ -143,12 +179,20 @@ pkg/config           → Configuration structs and YAML loading
 
 **Protocol mapping**: Application-layer protocol specifiers (http, https, ftp, ssh, smtp, dns, etc.) are transparently mapped to TCP transport in `parseHeader()`.
 
+**TX Engine abstraction**: `packets.TxEngine` supports `pcap` (default), `sendmmsg`, and `afpacket`. All three are implemented:
+- `pcap` - Works on all platforms (default)
+- `sendmmsg` - Linux-only batch send via raw sockets
+- `afpacket` - Linux-only AF_PACKET TX_RING for highest performance
+
+**Scanner design**: `internal/scanner.Scanner` uses a semaphore-pattern worker pool with optional rate limiting via ticker. Service detection reads banners with a configurable timeout.
+
 ## Key Interfaces
 
 - `rules.Parser`: Parses Snort rules → `*ParsedRule`
 - `packets.Generator`: Generates `gopacket.Packet` from `*ParsedRule`
-- `packets.Sender`: Writes packets to PCAP files
+- `packets.Sender`: Writes packets to PCAP files and optionally injects
 - `engine.Engine`: Worker pool (NumCPU workers by default) with buffered channels
+- `scanner.Scanner`: TCP port scanner with configurable workers and rate limiting
 
 ## Parse Error Phases
 
@@ -401,6 +445,7 @@ engine:
     interface: lo0
     snap_len: 65536
     timeout: 1s
+    tx_engine: pcap             # pcap, sendmmsg, afpacket (sendmmsg/afpacket reserved)
 
 api:
   address: ":8080"
@@ -722,7 +767,7 @@ These are parsed into `ParsedRule.Threshold`, `ParsedRule.RateFilter`, and `Pars
 Payload size matching: `dsize:<n>` or `dsize:<min><><max>`
 
 | Format | Description |
-|--------|-------------|
+|--------|------------|
 | `dsize:100` | Exactly 100 bytes |
 | `dsize:>100` | Greater than 100 |
 | `dsize:<200` | Less than 200 |

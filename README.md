@@ -84,7 +84,8 @@ go build -o snortx-api ./cmd/api
 
 发送引擎：
 - 当前默认 `pcap`（稳定可用）。
-- `sendmmsg` / `afpacket` 引擎已预留 CLI/配置入口，后续版本实现。
+- `sendmmsg` 引擎已实现（Linux 专用）。
+- `afpacket` 引擎已实现（Linux 专用）。
 
 ### 配置文件
 

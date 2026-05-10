@@ -6,7 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -57,9 +61,23 @@ type SendResult struct {
 	Duration       time.Duration `json:"duration"`
 }
 
+// packetInjector is the internal interface for pcap handle injection
 type packetInjector interface {
 	WritePacketData(data []byte) error
 	Close()
+}
+
+// PacketInjector is the exported interface for sending packets
+type PacketInjector interface {
+	WritePacket(data []byte) error
+	Close()
+}
+
+// Ensure *Sender implements PacketInjector
+var _ PacketInjector = (*Sender)(nil)
+
+func (s *Sender) WritePacket(data []byte) error {
+	return s.InjectPacket(data)
 }
 
 type Sender struct {
@@ -115,9 +133,13 @@ func newPacketInjector(iface string, txEngine TxEngine) (packetInjector, error) 
 		}
 		return handle, nil
 	case TxEngineSendMmsg:
-		return nil, fmt.Errorf("tx engine %q is not implemented yet", txEngine)
+		// sendmmsg injector is created by the CLI directly
+		// since it needs destination IP/port which the sender doesn't have
+		return nil, nil
 	case TxEngineAFPacket:
-		return nil, fmt.Errorf("tx engine %q is not implemented yet", txEngine)
+		// AF_PACKET injector is created by the CLI directly
+		// since it may need custom configuration
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("unsupported tx engine: %s", txEngine)
 	}
@@ -223,5 +245,246 @@ func (s *Sender) SendAndRecord(rule *rules.ParsedRule, packets []gopacket.Packet
 		PacketsWritten: written,
 		PCAPPath:       pcapFile,
 		Status:         "success",
+	}
+}
+
+// BurstSender provides batched packet sending via a single writer goroutine.
+// This avoids pcap handle contention when multiple goroutines call WritePacketData.
+type BurstSender struct {
+	sender  *Sender
+	packetCh chan []byte
+	done    chan struct{}
+	wg      sync.WaitGroup
+}
+
+// Ensure *BurstSender implements PacketInjector
+var _ PacketInjector = (*BurstSender)(nil)
+
+// NewBurstSender creates a BurstSender that batches packet sends through a single goroutine.
+func NewBurstSender(sender *Sender, queueSize int) *BurstSender {
+	if queueSize <= 0 {
+		queueSize = 4096
+	}
+	bs := &BurstSender{
+		sender:  sender,
+		packetCh: make(chan []byte, queueSize),
+		done:    make(chan struct{}),
+	}
+	bs.wg.Add(1)
+	go bs.writerLoop()
+	return bs
+}
+
+// writerLoop reads packets from the channel and sends them one by one.
+// This ensures only one goroutine touches the pcap handle.
+func (bs *BurstSender) writerLoop() {
+	defer bs.wg.Done()
+	for {
+		select {
+		case <-bs.done:
+			// Drain remaining packets
+			for {
+				select {
+				case pkt := <-bs.packetCh:
+					bs.sender.InjectPacket(pkt)
+				default:
+					return
+				}
+			}
+		case pkt := <-bs.packetCh:
+			bs.sender.InjectPacket(pkt)
+		}
+	}
+}
+
+// WritePacket queues a packet for batch sending.
+func (bs *BurstSender) WritePacket(data []byte) error {
+	select {
+	case bs.packetCh <- data:
+		return nil
+	default:
+		// Channel full, send directly
+		return bs.sender.InjectPacket(data)
+	}
+}
+
+// Close stops the writer loop and waits for completion.
+func (bs *BurstSender) Close() {
+	close(bs.done)
+	bs.wg.Wait()
+}
+
+// MultiSender manages multiple pcap handles, one per worker.
+// This may reduce handle contention on some platforms.
+type MultiSender struct {
+	handles []*pcap.Handle
+	count   int
+}
+
+// NewMultiSender creates a sender with multiple pcap handles.
+func NewMultiSender(iface string, handleCount int) (*MultiSender, error) {
+	if handleCount <= 0 {
+		handleCount = 1
+	}
+	handles := make([]*pcap.Handle, handleCount)
+	for i := 0; i < handleCount; i++ {
+		h, err := pcap.OpenLive(iface, 65536, true, -1)
+		if err != nil {
+			// Close already opened handles
+			for j := 0; j < i; j++ {
+				handles[j].Close()
+			}
+			return nil, fmt.Errorf("failed to open interface %s: %w", iface, err)
+		}
+		handles[i] = h
+	}
+	return &MultiSender{handles: handles, count: handleCount}, nil
+}
+
+// GetHandle returns the pcap handle for the given worker ID (round-robin).
+func (ms *MultiSender) GetHandle(workerID int) *pcap.Handle {
+	return ms.handles[workerID%ms.count]
+}
+
+// Close closes all pcap handles.
+func (ms *MultiSender) Close() {
+	for _, h := range ms.handles {
+		h.Close()
+	}
+}
+
+// WriteTo writes a packet using the specified handle.
+func (ms *MultiSender) WriteTo(workerID int, data []byte) error {
+	return ms.GetHandle(workerID).WritePacketData(data)
+}
+
+// MultiInjector distributes packets across multiple pcap handles using round-robin.
+// This allows each worker goroutine to use a dedicated handle.
+type MultiInjector struct {
+	ms     *MultiSender
+	handleCount int
+	nextHandle  int32 // atomic: next handle to use
+}
+
+// Ensure *MultiInjector implements PacketInjector
+var _ PacketInjector = (*MultiInjector)(nil)
+
+// NewMultiInjector creates a packet injector that distributes across multiple handles.
+func NewMultiInjector(ms *MultiSender) *MultiInjector {
+	return &MultiInjector{
+		ms:          ms,
+		handleCount: ms.count,
+		nextHandle:  0,
+	}
+}
+
+// WritePacket writes to a pcap handle, rotating handles for each call.
+func (mi *MultiInjector) WritePacket(data []byte) error {
+	handleIdx := atomic.AddInt32(&mi.nextHandle, 1) - 1
+	return mi.ms.WriteTo(int(handleIdx), data)
+}
+
+// Close closes all underlying handles.
+func (mi *MultiInjector) Close() {
+	mi.ms.Close()
+}
+
+// RawSocketInjector uses raw sockets for packet injection.
+// Raw sockets bypass some pcap/libpcap overhead on macOS.
+type RawSocketInjector struct {
+	addrs   []unix.SockaddrInet4
+	fds     []int
+	count   int
+	nextIdx int32 // atomic: next socket to use
+}
+
+// Ensure *RawSocketInjector implements PacketInjector
+var _ PacketInjector = (*RawSocketInjector)(nil)
+
+// NewRawSocketInjector creates a raw socket injector with multiple sockets.
+// Note: On macOS, use specific protocol (IPPROTO_TCP) instead of IPPROTO_RAW
+// because RAW sockets have stricter requirements.
+func NewRawSocketInjector(count int) (*RawSocketInjector, error) {
+	return newRawSocketInjectorWithProtocol(count, unix.IPPROTO_TCP)
+}
+
+// newRawSocketInjectorWithProtocol creates a raw socket injector with a specific IP protocol.
+func newRawSocketInjectorWithProtocol(count int, protocol int) (*RawSocketInjector, error) {
+	if count <= 0 {
+		count = 1
+	}
+	fds := make([]int, count)
+	addrs := make([]unix.SockaddrInet4, count)
+	for i := 0; i < count; i++ {
+		// Create raw socket with specific protocol (not IPPROTO_RAW on macOS)
+		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_RAW, protocol)
+		if err != nil {
+			for j := 0; j < i; j++ {
+				unix.Close(fds[j])
+			}
+			return nil, fmt.Errorf("failed to create raw socket: %w", err)
+		}
+		// Note: Do NOT set IP_HDRINCL with IPPROTO_TCP/UDP.
+		// The kernel automatically adds the IP header for protocol-specific raw sockets.
+		fds[i] = fd
+	}
+	return &RawSocketInjector{addrs: addrs, fds: fds, count: count, nextIdx: 0}, nil
+}
+
+// WritePacket sends a packet via raw socket.
+// With IPPROTO_TCP (no IP_HDRINCL), we send only the L4 payload (TCP header + data).
+// The kernel adds the IP header automatically.
+func (rsi *RawSocketInjector) WritePacket(data []byte) error {
+	if len(data) == 0 {
+		return fmt.Errorf("empty packet")
+	}
+
+	// Check IP version at byte 14 (top 4 bits)
+	if len(data) < 15 {
+		return fmt.Errorf("packet too short (need at least Ethernet header)")
+	}
+	version := data[14] >> 4
+
+	if version == 4 {
+		// IPv4: Ethernet(14) + IPv4(20) = 34 bytes header
+		if len(data) < 34 {
+			return fmt.Errorf("packet too short (need at least 34 bytes for Ethernet+IPv4)")
+		}
+		l4Payload := data[34:]
+		if len(l4Payload) == 0 {
+			return fmt.Errorf("no L4 payload")
+		}
+		socketIdx := atomic.AddInt32(&rsi.nextIdx, 1) - 1
+		socketIdx = socketIdx % int32(rsi.count) // Round-robin across available sockets
+		fd := rsi.fds[socketIdx]
+		// Get destination from IPv4 header (bytes 16-19)
+		dstIP := [4]byte{data[16], data[17], data[18], data[19]}
+		// Get destination port from TCP header (bytes 36-37, after Ethernet+IPv4)
+		srcPort := uint16(data[34])<<8 | uint16(data[35])
+		dstPort := uint16(data[36])<<8 | uint16(data[37])
+		_ = srcPort // unused
+
+		addr := unix.SockaddrInet4{
+			Addr: dstIP,
+			Port: int(dstPort),
+		}
+		err := unix.Sendto(fd, l4Payload, 0, &addr)
+		if err != nil {
+			return err
+		}
+		return nil
+	} else if version == 6 {
+		// IPv6: Ethernet(14) + IPv6(40) = 54 bytes header
+		// RawSocketInjector uses AF_INET (IPv4 only) so IPv6 is not supported
+		return fmt.Errorf("IPv6 not supported with raw socket injector (uses AF_INET)")
+	} else {
+		return fmt.Errorf("unknown IP version: %d", version)
+	}
+}
+
+// Close closes all raw sockets.
+func (rsi *RawSocketInjector) Close() {
+	for _, fd := range rsi.fds {
+		unix.Close(fd)
 	}
 }
