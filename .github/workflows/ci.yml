@@ -1,0 +1,133 @@
+name: CI / Release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  # =========================================================================
+  # CI: build + test + vet (push & PR)
+  # =========================================================================
+  build:
+    if: github.event_name != 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Build
+        run: go build -v ./...
+
+      - name: Vet
+        run: go vet ./...
+
+  test:
+    if: github.event_name != 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Test
+        run: go test -race -count=1 -short ./... 2>&1 | tee test-output.txt
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-output.txt
+
+  lint:
+    if: github.event_name != 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  # =========================================================================
+  # Release: cross-compile + create GitHub Release (tag / published release)
+  # =========================================================================
+  release-build:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -ldflags="-s -w" -o snortx ./cmd/cli
+          go build -ldflags="-s -w" -o snortx-api ./cmd/api
+          tar -czf "snortx-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" snortx snortx-api
+          sha256sum "snortx-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" > "snortx-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz.sha256"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: snortx-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            snortx-*.tar.gz
+            snortx-*.tar.gz.sha256
+
+  release-publish:
+    if: github.event_name == 'release'
+    needs: release-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Upload to Release
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            snortx-*.tar.gz \
+            snortx-*.tar.gz.sha256 \
+            --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: artifacts
