@@ -27,6 +27,9 @@ jobs:
         with:
           go-version: "1.25"
 
+      - name: Install libpcap
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libpcap-dev
+
       - name: Set version
         run: |
           VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -50,6 +53,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
+
+      - name: Install libpcap
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libpcap-dev
 
       - name: Test
         run: go test -race -count=1 -short ./... 2>&1 | tee test-output.txt
@@ -89,10 +95,13 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
+            cgo: 1
           - goos: linux
             goarch: arm64
+            cgo: 0
           - goos: darwin
             goarch: arm64
+            cgo: 0
     steps:
       - uses: actions/checkout@v4
 
@@ -100,16 +109,21 @@ jobs:
         with:
           go-version: "1.25"
 
+      - name: Install libpcap (cgo builds)
+        if: ${{ matrix.cgo == 1 }}
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libpcap-dev
+
       - name: Set version
         run: |
-          TAG="${{ github.ref_name }}"       # e.g. v1.0.0
-          VERSION="${TAG#v}"                 # strip 'v' prefix → 1.0.0
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.cgo }}
         run: |
           go build -ldflags="-s -w -X main.version=$VERSION" -o snortx ./cmd/cli
           go build -ldflags="-s -w -X main.version=$VERSION" -o snortx-api ./cmd/api
