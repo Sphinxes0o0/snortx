@@ -38,7 +38,7 @@ var (
 	parseJSON    bool
 )
 
-const version = "1.0.0"
+var version = "dev" // injected via -ldflags at build time
 
 var rootCmd = &cobra.Command{
 	Use:   "snortx",

@@ -3,10 +3,9 @@ name: CI / Release
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
-  release:
-    types: [published]
 
 permissions:
   contents: write
@@ -14,26 +13,35 @@ permissions:
 
 jobs:
   # =========================================================================
-  # CI: build + test + vet (push & PR)
+  # CI: build + test + lint (push & PR, no tags)
   # =========================================================================
   build:
-    if: github.event_name != 'release'
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
 
+      - name: Set version
+        run: |
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
       - name: Build
-        run: go build -v ./...
+        run: |
+          go build -v -ldflags="-s -w -X main.version=$VERSION" ./cmd/cli
+          go build -v -ldflags="-s -w -X main.version=$VERSION" ./cmd/api
 
       - name: Vet
         run: go vet ./...
 
   test:
-    if: github.event_name != 'release'
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -54,7 +62,7 @@ jobs:
           path: test-output.txt
 
   lint:
-    if: github.event_name != 'release'
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -71,10 +79,10 @@ jobs:
           args: --timeout=5m
 
   # =========================================================================
-  # Release: cross-compile + create GitHub Release (tag / published release)
+  # Release: cross-compile + GitHub Release (tag push v*)
   # =========================================================================
-  release-build:
-    if: github.event_name == 'release'
+  release:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -94,15 +102,21 @@ jobs:
         with:
           go-version: "1.25"
 
+      - name: Set version
+        run: |
+          TAG="${{ github.ref_name }}"       # e.g. v1.0.0
+          VERSION="${TAG#v}"                 # strip 'v' prefix → 1.0.0
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          go build -ldflags="-s -w" -o snortx ./cmd/cli
-          go build -ldflags="-s -w" -o snortx-api ./cmd/api
-          tar -czf "snortx-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" snortx snortx-api
-          sha256sum "snortx-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" > "snortx-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz.sha256"
+          go build -ldflags="-s -w -X main.version=$VERSION" -o snortx ./cmd/cli
+          go build -ldflags="-s -w -X main.version=$VERSION" -o snortx-api ./cmd/api
+          tar -czf "snortx-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" snortx snortx-api
+          sha256sum "snortx-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" > "snortx-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz.sha256"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -113,8 +127,8 @@ jobs:
             snortx-*.tar.gz.sha256
 
   release-publish:
-    if: github.event_name == 'release'
-    needs: release-build
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    needs: release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -122,12 +136,9 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Upload to Release
-        run: |
-          gh release upload "${{ github.ref_name }}" \
-            snortx-*.tar.gz \
-            snortx-*.tar.gz.sha256 \
-            --clobber
-        env:
-          GH_TOKEN: ${{ github.token }}
-        working-directory: artifacts
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: artifacts/*
