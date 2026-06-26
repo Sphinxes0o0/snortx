@@ -239,3 +239,33 @@ macOS loopback performance with 1 worker (~920K PPS). Multi-worker performance d
 - [ ] Performance report (before/after).
 - [ ] Safe defaults and fallback behavior documented.
 
+## Feature Request: ICMP type/code flags for `flood` command
+
+**Requested by**: NIDS rule test framework (nids_test)
+
+**Problem**: `snortx flood --protocol icmp` sends ICMP packets but has no flags to
+control ICMP type or code fields.  This prevents testing ICMP flood detection
+rules that match specific types:
+
+```
+log icmp any any -> any any (msg:"ICMP Echo Flood"; icode:0; itype:8; threshold: ...; sid:1001001;)
+log icmp any any -> any any (msg:"ICMP Reply Flood"; icode:0; itype:0; threshold: ...; sid:1001002;)
+```
+
+hping3 handles this with `-C <type> -K <code>`, but hping3 has poor throughput
+(~111 pps) and no strict count delivery.
+
+**Proposed solution**: Add two flags:
+
+```
+--icmp-type int    ICMP type (0=Echo Reply, 8=Echo Request, 3=Dest Unreachable, ...)
+--icmp-code int    ICMP code (default 0)
+```
+
+**Implementation hint**: `flood_cmd.go` already builds a synthetic `ParsedRule`
+and passes it through `generator.Generate()`.  `ParsedRule` already stores
+`itype`/`icode` in its Options map.  The flood command just needs to set
+`Options["itype"]` and `Options["icode"]` from the new flags before calling
+`Generate()`.  The ICMP packet builder in `generator.go` already reads these
+options — no generator changes needed.
+
