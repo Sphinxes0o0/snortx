@@ -1,6 +1,6 @@
 # Binaries
-snortx
-snortx-api
+/snortx
+/snortx-api
 *.exe
 
 # Output

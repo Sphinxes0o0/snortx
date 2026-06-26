@@ -155,6 +155,29 @@ alert tcp any any -> any any (msg:"TEST PCRE"; content:"GET /"; pcre:"/GET /"; s
 alert tcp any any <> any any (msg:"TEST bidirectional"; content:"test"; sid:1000027; rev:1;)
 ```
 
+## Agent Skill (pi-agent / Claude Code / OpenCode)
+
+This repo ships an [Agent Skills](https://agentskills.io/specification) package at `.agents/skills/snortx/` that gives AI assistants deep context about snortx's architecture, commands, and conventions. Project-level skill discovery is supported by all three agents:
+
+- pi-agent → `.agents/skills/` or `.pi/skills/`
+- Claude Code → `.agents/skills/` or `.claude/skills/`
+- OpenCode → `.agents/skills/`
+
+Once cloned, the agent auto-loads the skill when working in this directory. For global install:
+
+```bash
+# pi-agent
+cp -r .agents/skills/snortx ~/.pi/agent/skills/
+
+# Claude Code
+cp -r .agents/skills/snortx ~/.claude/skills/
+
+# OpenCode
+cp -r .agents/skills/snortx ~/.config/opencode/skills/
+```
+
+Invoke via `/skill:snortx` or by saying "use the snortx skill to ..." in chat. The skill ships with `references/` sub-docs (architecture, CLI commands, rule options, REST API) loaded on demand.
+
 ## License
 
 MIT

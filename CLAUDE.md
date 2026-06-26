@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Agent Skill**: This repo also ships an Agent Skills package at `.agents/skills/snortx/` (loaded automatically). If the skill is loaded, prefer its references for deep details: `references/architecture.md`, `references/cli-commands.md`, `references/rule-options.md`, `references/api.md`.
+
 ## Project Overview
 
 snortx is a Go-based tool that parses Snort rules, generates matching network packets, records them to PCAP files, and generates HTML/JSON test reports. It also provides high-speed port scanning (nmap/masscan style) and packet flooding (hping3 style).

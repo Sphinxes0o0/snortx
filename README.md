@@ -155,6 +155,29 @@ alert tcp any any -> any any (msg:"TEST PCRE"; content:"GET /"; pcre:"/GET /"; s
 alert tcp any any <> any any (msg:"TEST bidirectional"; content:"test"; sid:1000027; rev:1;)
 ```
 
+## Agent Skill (pi-agent / Claude Code / OpenCode)
+
+仓库自带 [Agent Skills](https://agentskills.io/specification) 包位于 `.agents/skills/snortx/`,让 AI 助手理解 snortx 的架构、命令和约定。三种 agent 的项目级 skills 目录都支持,自动发现:
+
+- pi-agent → `.agents/skills/` 或 `.pi/skills/`
+- Claude Code → `.agents/skills/` 或 `.claude/skills/`
+- OpenCode → `.agents/skills/`
+
+克隆仓库并进入后,agent 会自动加载。也支持装到全局:
+
+```bash
+# pi-agent
+cp -r .agents/skills/snortx ~/.pi/agent/skills/
+
+# Claude Code
+cp -r .agents/skills/snortx ~/.claude/skills/
+
+# OpenCode
+cp -r .agents/skills/snortx ~/.config/opencode/skills/
+```
+
+调用方式:`/skill:snortx` 或对话中说 "use the snortx skill to ..."。Skill 内含 `references/` 子文档(架构、CLI 命令、规则选项、REST API),按需加载。
+
 ## License
 
 MIT
