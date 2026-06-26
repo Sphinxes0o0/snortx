@@ -86,56 +86,73 @@ func (g *Generator) dstMAC() net.HardwareAddr {
 }
 
 func (g *Generator) Generate(rule *rules.ParsedRule) ([]gopacket.Packet, error) {
-	var pkts []gopacket.Packet
-	var err error
+	count := resolvePacketCount(rule)
 
-	switch rule.Protocol {
-	case "tcp":
-		pkts, err = g.buildTCP(rule, false)
-	case "udp":
-		pkts, err = g.buildUDP(rule, false)
-	case "icmp":
-		pkts, err = g.buildICMP(rule, false)
-	case "ip":
-		pkts, err = g.buildIP(rule, false)
-	case "sctp":
-		pkts, err = g.buildSCTP(rule, false)
-	case "dns":
-		pkts, err = g.buildDNS(rule, false)
-	case "arp":
-		pkts, err = g.buildARP(rule, false)
-	default:
-		return nil, fmt.Errorf("unsupported protocol: %s", rule.Protocol)
-	}
+	var allPkts []gopacket.Packet
+	for variant := 0; variant < count; variant++ {
+		var pkts []gopacket.Packet
+		var err error
 
-	if err != nil {
-		return nil, err
-	}
-
-	if rule.IsBidirectional {
-		var reversePkts []gopacket.Packet
 		switch rule.Protocol {
 		case "tcp":
-			reversePkts, err = g.buildTCP(rule, true)
+			pkts, err = g.buildTCP(rule, false, variant)
 		case "udp":
-			reversePkts, err = g.buildUDP(rule, true)
+			pkts, err = g.buildUDP(rule, false, variant)
 		case "icmp":
-			reversePkts, err = g.buildICMP(rule, true)
+			pkts, err = g.buildICMP(rule, false, variant)
 		case "ip":
-			reversePkts, err = g.buildIP(rule, true)
+			pkts, err = g.buildIP(rule, false)
 		case "sctp":
-			reversePkts, err = g.buildSCTP(rule, true)
+			pkts, err = g.buildSCTP(rule, false)
 		case "dns":
-			reversePkts, err = g.buildDNS(rule, true)
+			pkts, err = g.buildDNS(rule, false)
 		case "arp":
-			reversePkts, err = g.buildARP(rule, true)
+			pkts, err = g.buildARP(rule, false)
+		default:
+			return nil, fmt.Errorf("unsupported protocol: %s", rule.Protocol)
 		}
-		if err == nil {
-			pkts = append(pkts, reversePkts...)
+
+		if err != nil {
+			return nil, err
+		}
+		allPkts = append(allPkts, pkts...)
+
+		if rule.IsBidirectional {
+			var reversePkts []gopacket.Packet
+			switch rule.Protocol {
+			case "tcp":
+				reversePkts, err = g.buildTCP(rule, true, variant)
+			case "udp":
+				reversePkts, err = g.buildUDP(rule, true, variant)
+			case "icmp":
+				reversePkts, err = g.buildICMP(rule, true, variant)
+			case "ip":
+				reversePkts, err = g.buildIP(rule, true)
+			case "sctp":
+				reversePkts, err = g.buildSCTP(rule, true)
+			case "dns":
+				reversePkts, err = g.buildDNS(rule, true)
+			case "arp":
+				reversePkts, err = g.buildARP(rule, true)
+			}
+			if err != nil {
+				return nil, err
+			}
+			allPkts = append(allPkts, reversePkts...)
 		}
 	}
 
-	return pkts, nil
+	return allPkts, nil
+}
+
+func resolvePacketCount(rule *rules.ParsedRule) int {
+	if rule.Threshold != nil && rule.Threshold.Count > 1 {
+		return rule.Threshold.Count
+	}
+	if rule.DetectionFilter != nil && rule.DetectionFilter.Count > 1 {
+		return rule.DetectionFilter.Count
+	}
+	return 1
 }
 
 func (g *Generator) buildARP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Packet, error) {
@@ -309,14 +326,8 @@ func (g *Generator) buildDNSQuery(domain []byte) []byte {
 	return buf
 }
 
-func (g *Generator) buildTCP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Packet, error) {
+func (g *Generator) buildTCP(rule *rules.ParsedRule, reverse bool, variant int) ([]gopacket.Packet, error) {
 	srcIP, dstIP := g.resolveIPs(rule, reverse)
-	srcPort := g.expandPort(rule.SrcPorts)
-	dstPort := g.expandPort(rule.DstPorts)
-
-	if reverse {
-		srcPort, dstPort = dstPort, srcPort
-	}
 
 	payload, err := g.buildPayloadForRule(rule)
 	if err != nil {
@@ -350,7 +361,7 @@ func (g *Generator) buildTCP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 				IHL:      5,
 				TTL:      resolveTTL(rule),
 			}
-			tcp := g.buildTCPFlags(rule, reverse)
+			tcp := g.buildTCPFlags(rule, reverse, variant)
 			tcp.SetNetworkLayerForChecksum(ip)
 			if err := gopacket.SerializeLayers(buf, opts, eth, vlan, ip, tcp, gopacket.Payload(payload)); err != nil {
 				return nil, err
@@ -373,7 +384,7 @@ func (g *Generator) buildTCP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 				HopLimit:   resolveTTL(rule),
 				NextHeader: layers.IPProtocolTCP,
 			}
-			tcp := g.buildTCPFlags(rule, reverse)
+			tcp := g.buildTCPFlags(rule, reverse, variant)
 			tcp.SetNetworkLayerForChecksum(ip6)
 			if err := gopacket.SerializeLayers(buf, opts, eth, vlan, ip6, tcp, gopacket.Payload(payload)); err != nil {
 				return nil, err
@@ -395,7 +406,7 @@ func (g *Generator) buildTCP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 				IHL:      5,
 				TTL:      resolveTTL(rule),
 			}
-			tcp := g.buildTCPFlags(rule, reverse)
+			tcp := g.buildTCPFlags(rule, reverse, variant)
 			tcp.SetNetworkLayerForChecksum(ip)
 			if err := gopacket.SerializeLayers(buf, opts, eth, ip, tcp, gopacket.Payload(payload)); err != nil {
 				return nil, err
@@ -414,7 +425,7 @@ func (g *Generator) buildTCP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 				HopLimit:   resolveTTL(rule),
 				NextHeader: layers.IPProtocolTCP,
 			}
-			tcp := g.buildTCPFlags(rule, reverse)
+			tcp := g.buildTCPFlags(rule, reverse, variant)
 			tcp.SetNetworkLayerForChecksum(ip6)
 			if err := gopacket.SerializeLayers(buf, opts, eth, ip6, tcp, gopacket.Payload(payload)); err != nil {
 				return nil, err
@@ -426,8 +437,8 @@ func (g *Generator) buildTCP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 	return []gopacket.Packet{packet}, nil
 }
 
-func (g *Generator) buildTCPFlags(rule *rules.ParsedRule, reverse bool) *layers.TCP {
-	srcPort := g.expandPort(rule.SrcPorts)
+func (g *Generator) buildTCPFlags(rule *rules.ParsedRule, reverse bool, variant int) *layers.TCP {
+	srcPort := variantPort(g.expandPort(rule.SrcPorts), variant)
 	dstPort := g.expandPort(rule.DstPorts)
 
 	if reverse {
@@ -513,6 +524,22 @@ func applyTCPFlags(tcp *layers.TCP, flagsRaw string) bool {
 		return false
 	}
 
+	parts := strings.FieldsFunc(flagsRaw, func(r rune) bool {
+		return r == ',' || r == '|' || r == ' ' || r == '+'
+	})
+
+	// Validate all parts before mutating tcp state.
+	for _, p := range parts {
+		switch strings.TrimSpace(p) {
+		case "", "all", "none",
+			"syn", "s", "ack", "a",
+			"psh", "p", "rst", "r",
+			"fin", "f", "urg", "u":
+		default:
+			return false
+		}
+	}
+
 	tcp.SYN = false
 	tcp.ACK = false
 	tcp.PSH = false
@@ -520,10 +547,6 @@ func applyTCPFlags(tcp *layers.TCP, flagsRaw string) bool {
 	tcp.FIN = false
 	tcp.URG = false
 
-	applied := false
-	parts := strings.FieldsFunc(flagsRaw, func(r rune) bool {
-		return r == ',' || r == '|' || r == ' ' || r == '+'
-	})
 	for _, part := range parts {
 		switch strings.TrimSpace(part) {
 		case "":
@@ -535,31 +558,23 @@ func applyTCPFlags(tcp *layers.TCP, flagsRaw string) bool {
 			tcp.RST = true
 			tcp.FIN = true
 			tcp.URG = true
-			applied = true
 		case "none":
-			applied = true
-		case "syn":
+		case "syn", "s":
 			tcp.SYN = true
-			applied = true
-		case "ack":
+		case "ack", "a":
 			tcp.ACK = true
-			applied = true
-		case "psh":
+		case "psh", "p":
 			tcp.PSH = true
-			applied = true
-		case "rst":
+		case "rst", "r":
 			tcp.RST = true
-			applied = true
-		case "fin":
+		case "fin", "f":
 			tcp.FIN = true
-			applied = true
-		case "urg":
+		case "urg", "u":
 			tcp.URG = true
-			applied = true
 		}
 	}
 
-	return applied
+	return true
 }
 
 func resolveTTL(rule *rules.ParsedRule) uint8 {
@@ -582,9 +597,9 @@ func resolveTTL(rule *rules.ParsedRule) uint8 {
 	return defaultTTL
 }
 
-func (g *Generator) buildUDP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Packet, error) {
+func (g *Generator) buildUDP(rule *rules.ParsedRule, reverse bool, variant int) ([]gopacket.Packet, error) {
 	srcIP, dstIP := g.resolveIPs(rule, reverse)
-	srcPort := g.expandPort(rule.SrcPorts)
+	srcPort := variantPort(g.expandPort(rule.SrcPorts), variant)
 	dstPort := g.expandPort(rule.DstPorts)
 
 	if reverse {
@@ -711,7 +726,7 @@ func (g *Generator) buildUDP(rule *rules.ParsedRule, reverse bool) ([]gopacket.P
 	return []gopacket.Packet{packet}, nil
 }
 
-func (g *Generator) buildICMP(rule *rules.ParsedRule, reverse bool) ([]gopacket.Packet, error) {
+func (g *Generator) buildICMP(rule *rules.ParsedRule, reverse bool, variant int) ([]gopacket.Packet, error) {
 	srcIP, dstIP := g.resolveIPs(rule, reverse)
 	payload, err := g.buildPayloadForRule(rule)
 	if err != nil {
@@ -742,10 +757,15 @@ func (g *Generator) buildICMP(rule *rules.ParsedRule, reverse bool) ([]gopacket.
 			TTL:      resolveTTL(rule),
 		}
 
+		icmpSeq := resolveICMPIdentifier(rule, "icmp_seq")
+		if variant > 0 {
+			icmpSeq = uint16(variant)
+		}
+
 		icmp := &layers.ICMPv4{
 			TypeCode: layers.CreateICMPv4TypeCode(resolveICMPType(rule), resolveICMPCode(rule)),
 			Id:       resolveICMPIdentifier(rule, "icmp_id"),
-			Seq:      resolveICMPIdentifier(rule, "icmp_seq"),
+			Seq:      icmpSeq,
 		}
 
 		err = gopacket.SerializeLayers(buf, opts, eth, ip, icmp, gopacket.Payload(payload))
@@ -776,6 +796,9 @@ func (g *Generator) buildICMP(rule *rules.ParsedRule, reverse bool) ([]gopacket.
 		// Prepend ICMPv6 identifier and sequence to payload
 		icmpID := resolveICMPIdentifier(rule, "icmp_id")
 		icmpSeq := resolveICMPIdentifier(rule, "icmp_seq")
+		if variant > 0 {
+			icmpSeq = uint16(variant)
+		}
 		icmpPayload := make([]byte, 4+len(payload))
 		binary.BigEndian.PutUint16(icmpPayload[0:2], icmpID)
 		binary.BigEndian.PutUint16(icmpPayload[2:4], icmpSeq)
@@ -1306,6 +1329,17 @@ func resolveICMPIdentifier(rule *rules.ParsedRule, key string) uint16 {
 		}
 	}
 	return 0
+}
+
+func variantPort(base uint16, variant int) uint16 {
+	if variant == 0 {
+		return base
+	}
+	v := (int(base) + variant) % 65536
+	if v < 1024 {
+		v += 1024
+	}
+	return uint16(v)
 }
 
 func (g *Generator) extractIPFromCIDR(cidr string) string {

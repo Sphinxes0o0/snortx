@@ -205,7 +205,7 @@ func (p *Parser) ParseRule(text string) (*ParsedRule, error) {
 		return nil, headerErr
 	}
 
-	ruleID, msg, contents, pcreMatches, byteTests, byteJumps, flow, flowbits, noAlert, options, vlanID, optErr := p.parseOptions(optionsStr, origText)
+	ruleID, msg, contents, pcreMatches, byteTests, byteJumps, flow, flowbits, noAlert, options, vlanID, threshold, rateFilter, detectionFilter, optErr := p.parseOptions(optionsStr, origText)
 	if optErr != nil {
 		return nil, optErr
 	}
@@ -254,6 +254,9 @@ func (p *Parser) ParseRule(text string) (*ParsedRule, error) {
 		ByteJumps:       byteJumps,
 		Flow:            flow,
 		Flowbits:        flowbits,
+		Threshold:       threshold,
+		RateFilter:      rateFilter,
+		DetectionFilter: detectionFilter,
 		NoAlert:         noAlert,
 		Options:         options,
 		VLANID:          vlanID,
@@ -367,7 +370,7 @@ func isAppProtocol(proto string) bool {
 	return appProtocols[strings.ToLower(proto)]
 }
 
-func (p *Parser) parseOptions(opts string, ruleText string) (RuleID, string, []ContentMatch, []PCREMatch, []ByteTest, []ByteJump, string, []Flowbit, bool, map[string]string, uint16, error) {
+func (p *Parser) parseOptions(opts string, ruleText string) (RuleID, string, []ContentMatch, []PCREMatch, []ByteTest, []ByteJump, string, []Flowbit, bool, map[string]string, uint16, *Threshold, *RateFilter, *DetectionFilter, error) {
 	ruleID := RuleID{GID: 1, SID: 0, REV: 1}
 	var msg string
 	var contents []ContentMatch
@@ -376,13 +379,16 @@ func (p *Parser) parseOptions(opts string, ruleText string) (RuleID, string, []C
 	var byteJumps []ByteJump
 	var flow string
 	var flowbits []Flowbit
+	var threshold *Threshold
+	var rateFilter *RateFilter
+	var detectionFilter *DetectionFilter
 	noAlert := false
 	options := make(map[string]string)
 	var pendingNocase bool
 	var vlanID uint16
 
-	errRet := func(err *ParseError) (RuleID, string, []ContentMatch, []PCREMatch, []ByteTest, []ByteJump, string, []Flowbit, bool, map[string]string, uint16, error) {
-		return ruleID, msg, contents, pcreMatches, byteTests, byteJumps, flow, flowbits, noAlert, options, vlanID, err
+	errRet := func(err *ParseError) (RuleID, string, []ContentMatch, []PCREMatch, []ByteTest, []ByteJump, string, []Flowbit, bool, map[string]string, uint16, *Threshold, *RateFilter, *DetectionFilter, error) {
+		return ruleID, msg, contents, pcreMatches, byteTests, byteJumps, flow, flowbits, noAlert, options, vlanID, threshold, rateFilter, detectionFilter, err
 	}
 
 	parts := strings.Split(opts, ";")
@@ -521,7 +527,8 @@ func (p *Parser) parseOptions(opts string, ruleText string) (RuleID, string, []C
 			}
 		} else if strings.HasPrefix(part, "threshold:") {
 			// Validate threshold syntax
-			_, thErr := p.parseThreshold(part)
+			var thErr error
+				threshold, thErr = p.parseThreshold(part)
 			if thErr != nil {
 				return errRet(&ParseError{
 					CharOffset: offset,
@@ -533,7 +540,8 @@ func (p *Parser) parseOptions(opts string, ruleText string) (RuleID, string, []C
 			options["threshold"] = part
 		} else if strings.HasPrefix(part, "rate_filter:") {
 			// Validate rate_filter syntax
-			_, rfErr := p.parseRateFilter(part)
+			var rfErr error
+				rateFilter, rfErr = p.parseRateFilter(part)
 			if rfErr != nil {
 				return errRet(&ParseError{
 					CharOffset: offset,
@@ -545,7 +553,8 @@ func (p *Parser) parseOptions(opts string, ruleText string) (RuleID, string, []C
 			options["rate_filter"] = part
 		} else if strings.HasPrefix(part, "detection_filter:") {
 			// Validate detection_filter syntax
-			_, dfErr := p.parseDetectionFilter(part)
+			var dfErr error
+				detectionFilter, dfErr = p.parseDetectionFilter(part)
 			if dfErr != nil {
 				return errRet(&ParseError{
 					CharOffset: offset,
@@ -1871,7 +1880,7 @@ func (p *Parser) parseOptions(opts string, ruleText string) (RuleID, string, []C
 		optPos += len(part) + 1 // +1 for the semicolon that was split on
 	}
 
-	return ruleID, msg, contents, pcreMatches, byteTests, byteJumps, flow, flowbits, noAlert, options, vlanID, nil
+	return ruleID, msg, contents, pcreMatches, byteTests, byteJumps, flow, flowbits, noAlert, options, vlanID, threshold, rateFilter, detectionFilter, nil
 }
 
 func (p *Parser) parsePCRE(part string) (PCREMatch, error) {

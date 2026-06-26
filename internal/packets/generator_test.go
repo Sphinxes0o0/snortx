@@ -320,7 +320,7 @@ func TestGenerator_TCPFlagsOption(t *testing.T) {
 		},
 	}
 
-	tcp := g.buildTCPFlags(rule, false)
+	tcp := g.buildTCPFlags(rule, false, 0)
 	if !tcp.SYN {
 		t.Error("expected SYN=true")
 	}
@@ -384,7 +384,7 @@ func TestGenerator_FlagsAliasOption(t *testing.T) {
 		},
 	}
 
-	tcp := g.buildTCPFlags(rule, false)
+	tcp := g.buildTCPFlags(rule, false, 0)
 	if !tcp.SYN || !tcp.ACK {
 		t.Fatalf("expected SYN and ACK to be set")
 	}
